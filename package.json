@@ -1,0 +1,24 @@
+{
+  "name": "meal-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Application web de commande de repas quotidiens pour clients abonnés",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=apps/backend",
+    "dev:frontend": "npm run dev --workspace=apps/frontend",
+    "build:backend": "npm run build --workspace=apps/backend",
+    "build:frontend": "npm run build --workspace=apps/frontend",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "prisma:migrate": "npm run prisma:migrate --workspace=apps/backend",
+    "prisma:generate": "npm run prisma:generate --workspace=apps/backend"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

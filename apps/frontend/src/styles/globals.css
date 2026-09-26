@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Variables CSS globales ────────────────────────────────── */
+:root {
+  --color-primary: #f97316;     /* Orange — identité visuelle food */
+  --color-primary-dark: #ea580c;
+  --color-secondary: #059669;   /* Vert — fraîcheur */
+  --color-background: #fafaf9;
+  --color-surface: #ffffff;
+  --color-text: #1c1917;
+  --color-text-muted: #78716c;
+  --color-error: #dc2626;
+  --color-success: #16a34a;
+  --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ─── Reset de base ─────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--color-background);
+  color: var(--color-text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
