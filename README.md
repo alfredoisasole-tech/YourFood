@@ -50,6 +50,9 @@ npm run prisma:generate
 # 5. Lancer les migrations
 npm run prisma:migrate
 
+# 5b. Initialiser les données de test (optionnel)
+npm run prisma:seed --workspace=@meal-app/backend
+
 # 6. Démarrer le backend
 npm run dev:backend
 
@@ -63,6 +66,7 @@ npm run dev:frontend
 
 - [`AG_RULES.md`](./AG_RULES.md) — Règles de qualité, sécurité et structure obligatoires pour tous les agents et développeurs
 - [`SPEC.md`](./SPEC.md) — Cahier des charges fonctionnel complet (formules d'abonnement, inscription, offres, commandes, dashboard admin, etc.)
+- [`TEST_DATA.md`](./TEST_DATA.md) — Données de test de référence (comptes démo, catalogue de plats congolais, offre du jour et scénarios de validation)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — Guide de contribution et étapes de configuration GitHub
 
 ---

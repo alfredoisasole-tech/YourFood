@@ -1,4 +1,6 @@
-// Services — ce dossier contiendra la logique métier
-// Les services ne doivent pas dépendre de Express (pas de req/res).
-// Ils reçoivent des données typées et retournent des résultats typés.
-export {};
+export * from './auth.service';
+export * from './client.service';
+export * from './catalog.service';
+export * from './offer.service';
+export * from './order.service';
+export * from './review.service';

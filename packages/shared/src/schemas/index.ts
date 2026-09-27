@@ -9,12 +9,8 @@
 
 import { z } from 'zod';
 import {
-  Role,
   SubscriptionPlan,
-  SubscriptionStatus,
   ItemCategory,
-  DailyOfferStatus,
-  OrderStatus,
 } from '../types';
 
 // ─── Schémas atomiques réutilisables ───────────────────────────

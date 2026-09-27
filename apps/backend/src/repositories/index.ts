@@ -1,4 +1,3 @@
-// Repositories — ce dossier contiendra l'accès aux données (Prisma)
-// Chaque repository encapsule les requêtes Prisma pour un modèle donné.
-// Pas de logique métier ici, seulement CRUD et requêtes spécialisées.
-export {};
+export * from './user.repository';
+export * from './subscription.repository';
+export * from './accessCode.repository';
