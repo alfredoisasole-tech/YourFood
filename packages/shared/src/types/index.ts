@@ -1,194 +1,342 @@
 /**
- * Types partagés pour l'application meal-app.
- *
- * Ces types correspondent au modèle de données défini dans SPEC.md
- * et au schéma Prisma. Ils sont utilisés par le backend et le frontend
- * pour garantir la cohérence des données.
+ * Types partagés pour l'application meal-app (YourFood).
+ * Source de vérité unique pour les modèles de données et DTOs échangés
+ * entre le backend (Node.js/Express) et le frontend (React).
+ * Basé sur SPEC.md (Spécification finale).
  */
 
 // ─── Enums ─────────────────────────────────────────────────────
 
 /** Rôle utilisateur dans le système */
 export enum Role {
-  ADMIN = 'ADMIN',
-  CLIENT = 'CLIENT',
+  ADMIN = 'admin',
+  CLIENT = 'client',
 }
 
-/** Formule d'abonnement */
+/** Formule d'abonnement (prix en FC) */
 export enum SubscriptionPlan {
-  /** 25 000 FC — Viande lundi et vendredi uniquement */
-  BASIC = 'BASIC',
-  /** 35 000 FC — Viande tous les jours */
-  PREMIUM = 'PREMIUM',
+  /** 25 000 FC — Viande incluse uniquement le lundi et le vendredi */
+  PLAN_25000 = '25000',
+  /** 35 000 FC — Viande incluse toute la semaine */
+  PLAN_35000 = '35000',
 }
 
 /** Statut d'un abonnement */
 export enum SubscriptionStatus {
-  ACTIVE = 'ACTIVE',
-  EXPIRED = 'EXPIRED',
-  CANCELLED = 'CANCELLED',
+  ACTIF = 'actif',
+  EXPIRE = 'expire',
 }
 
-/** Catégorie de l'offre journalière */
-export enum OfferCategory {
-  PLAT = 'PLAT',
-  ACCOMPAGNEMENT = 'ACCOMPAGNEMENT',
-  VIANDE = 'VIANDE',
+/** Type de code d'accès à usage unique */
+export enum AccessCodeType {
+  ACTIVATION = 'activation',
+  REINITIALISATION = 'reinitialisation',
 }
 
-/** Statut d'une commande */
+/** Catégorie de plat / option */
+export enum ItemCategory {
+  PLAT = 'plat',
+  ACCOMPAGNEMENT = 'accompagnement',
+  VIANDE = 'viande',
+}
+
+/** Statut d'une offre journalière */
+export enum DailyOfferStatus {
+  OUVERT = 'ouvert',
+  VERROUILLE = 'verrouille',
+}
+
+/** Statut d'une commande journalière */
 export enum OrderStatus {
-  PENDING = 'PENDING',
-  CONFIRMED = 'CONFIRMED',
-  DELIVERED = 'DELIVERED',
-  CANCELLED = 'CANCELLED',
-  /** Commande attribuée par défaut (non-choix du client) */
-  DEFAULT_ASSIGNED = 'DEFAULT_ASSIGNED',
+  EN_ATTENTE = 'en_attente',
+  VERROUILLEE = 'verrouillee',
+  ANNULEE = 'annulee',
 }
 
-// ─── Types ─────────────────────────────────────────────────────
+// ─── Modèles Entités (Base de données / REST) ──────────────────
 
-/** Utilisateur (client ou admin) */
+/** Utilisateur (identité de connexion, admin ou client) */
 export interface User {
-  id: string;
-  firstName: string;
-  lastName: string;
-  phone: string;
-  email: string | null;
+  id: number;
+  nom: string;
+  prenom: string;
+  telephone: string;
   role: Role;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** Code d'accès à 8 caractères pour la première connexion */
-export interface AccessCode {
-  id: string;
-  code: string;
-  userId: string;
-  isUsed: boolean;
-  usedAt: string | null;
-  expiresAt: string | null;
   createdAt: string;
 }
 
-/** Abonnement d'un client */
+/** Abonnement d'un client (historique préservé à chaque renouvellement) */
 export interface Subscription {
-  id: string;
-  userId: string;
-  plan: SubscriptionPlan;
-  status: SubscriptionStatus;
-  startDate: string;
-  endDate: string;
+  id: number;
+  userId: number;
+  formule: SubscriptionPlan;
+  dateDebut: string;
+  dateFin: string;
+  bonus?: string | null;
+  statut: SubscriptionStatus;
   createdAt: string;
-  updatedAt: string;
 }
 
-/** Offre journalière (pour la livraison du lendemain) */
-export interface DailyOffer {
-  id: string;
-  date: string;
-  isLocked: boolean;
+/** Code d'accès à 8 caractères (activation initiale ou réinitialisation) */
+export interface AccessCode {
+  id: number;
+  subscriptionId: number;
+  code: string;
+  type: AccessCodeType;
+  dateGeneration: string;
+  utilise: boolean;
+  dateUtilisation?: string | null;
+}
+
+/** Item du catalogue global de plats géré par l'admin */
+export interface CatalogItem {
+  id: number;
+  categorie: ItemCategory;
+  nom: string;
+  actif: boolean;
   createdAt: string;
-  updatedAt: string;
+}
+
+/** Offre du jour (une ligne par date de livraison) */
+export interface DailyOffer {
+  id: number;
+  date: string;
+  heureLimiteIndicative: string; // Ex: '13:00'
+  statut: DailyOfferStatus;
   options?: OfferOption[];
 }
 
-/** Option d'une catégorie dans une offre journalière */
+/** Option effectivement proposée pour un jour donné (liaison vers catalog_item) */
 export interface OfferOption {
-  id: string;
-  dailyOfferId: string;
-  category: OfferCategory;
-  name: string;
-  description: string | null;
-  imageUrl: string | null;
-  createdAt: string;
+  id: number;
+  dailyOfferId: number;
+  catalogItemId: number;
+  catalogItem?: CatalogItem;
 }
 
-/** Commande d'un client pour un jour donné */
+/** Commande journalière d'un client (triplet de choix) */
 export interface Order {
-  id: string;
-  userId: string;
-  dailyOfferId: string;
-  status: OrderStatus;
-  isDefaultChoice: boolean;
+  id: number;
+  dailyOfferId: number;
+  subscriptionId: number;
+  platId: number;
+  accompagnementId: number;
+  viandeId?: number | null;
+  statut: OrderStatus;
+  estDefaut: boolean;
+  prepare: boolean;
   createdAt: string;
   updatedAt: string;
-  items?: OrderItem[];
+  plat?: OfferOption;
+  accompagnement?: OfferOption;
+  viande?: OfferOption | null;
+  review?: Review | null;
 }
 
-/** Item d'une commande (un choix par catégorie) */
-export interface OrderItem {
-  id: string;
-  orderId: string;
-  offerOptionId: string;
-}
-
-/** Avis / notation d'un repas */
+/** Avis facultatif laissé par le client sur une commande */
 export interface Review {
-  id: string;
-  orderId: string;
-  userId: string;
-  rating: number;
-  comment: string | null;
+  id: number;
+  orderId: number;
+  commentaire?: string | null;
+  noteEtoile?: number | null; // 1 à 5
+  rempli: boolean;
   createdAt: string;
 }
 
-// ─── DTOs (Data Transfer Objects) ──────────────────────────────
+// ─── DTOs (Data Transfer Objects échangés via API) ─────────────
 
-/** Données pour l'inscription d'un client (côté admin) */
+// --- Authentification & Inscription ---
+
+/** Données envoyées par l'admin pour inscrire un client */
 export interface CreateClientDto {
-  firstName: string;
-  lastName: string;
-  phone: string;
-  email?: string;
-  plan: SubscriptionPlan;
-  startDate: string;
-  durationDays: number;
+  nom: string;
+  prenom: string;
+  telephone: string;
+  formule: SubscriptionPlan;
+  dureeJours: number;
+  dateDebut: string; // YYYY-MM-DD
   bonus?: string;
 }
 
-/** Données pour la connexion (première fois : avec code) */
+/** Réponse après inscription d'un client */
+export interface CreateClientResponse {
+  client: User;
+  subscription: Subscription;
+  accessCode: string;
+  activationLink: string;
+  whatsappUrl: string;
+}
+
+/** Première connexion du client : saisie du nom, du code reçu et création de son mot de passe */
 export interface FirstLoginDto {
-  lastName: string;
+  nom: string;
   code: string;
-  newPassword: string;
+  nouveauMotDePasse: string;
 }
 
-/** Données pour la connexion (connexions suivantes) */
+/** Connexions ultérieures : nom + mot de passe */
 export interface LoginDto {
-  lastName: string;
-  password: string;
+  nom: string;
+  motDePasse: string;
 }
 
-/** Données pour la création d'une offre journalière */
-export interface CreateDailyOfferDto {
-  date: string;
-  options: CreateOfferOptionDto[];
-}
-
-/** Données pour une option d'offre */
-export interface CreateOfferOptionDto {
-  category: OfferCategory;
-  name: string;
-  description?: string;
-}
-
-/** Données pour passer une commande */
-export interface CreateOrderDto {
-  dailyOfferId: string;
-  items: { offerOptionId: string }[];
-}
-
-/** Données pour soumettre un avis */
-export interface CreateReviewDto {
-  orderId: string;
-  rating: number;
-  comment?: string;
-}
-
-/** Réponse d'authentification */
+/** Réponse de connexion réussie (retourne le JWT et les infos essentielles) */
 export interface AuthResponse {
   token: string;
-  user: Omit<User, 'createdAt' | 'updatedAt'>;
+  user: User;
+  activeSubscription?: Subscription | null;
+}
+
+/** Demande de réinitialisation du mot de passe (initiée par l'admin depuis la fiche client) */
+export interface ResetPasswordRequestDto {
+  subscriptionId: number;
+}
+
+/** Réponse suite à une réinitialisation de mot de passe */
+export interface ResetPasswordResponse {
+  code: string;
+  whatsappUrl: string;
+}
+
+/** Modification de son mot de passe par le client connecté */
+export interface ChangePasswordDto {
+  ancienMotDePasse: string;
+  nouveauMotDePasse: string;
+}
+
+// --- Renouvellement Abonnement ---
+
+/** Demande de renouvellement ou prolongation d'un abonnement existant */
+export interface RenewSubscriptionDto {
+  dureeJours: number;
+  formule?: SubscriptionPlan;
+}
+
+// --- Catalogue de plats ---
+
+export interface CreateCatalogItemDto {
+  categorie: ItemCategory;
+  nom: string;
+  actif?: boolean;
+}
+
+export interface UpdateCatalogItemDto {
+  nom?: string;
+  actif?: boolean;
+}
+
+// --- Publication des offres du jour ---
+
+/** Publication pour un jour unique */
+export interface PublishSingleOfferDto {
+  date: string; // YYYY-MM-DD
+  heureLimiteIndicative?: string; // HH:mm, défaut '13:00'
+  catalogItemIds: number[]; // Exactement 6 items : 2 plats, 2 accompagnements, 2 viandes
+}
+
+/** Publication pour plusieurs jours ouvrés */
+export interface PublishMultiDaysOfferDto {
+  dateDebut: string; // YYYY-MM-DD
+  nombreJours: number; // Nombre de jours ouvrés (lundi à vendredi)
+  heureLimiteIndicative?: string;
+  catalogItemIds: number[]; // Les 6 items du catalogue dupliqués sur chaque jour
+}
+
+// --- Menu du jour & Commandes (côté client) ---
+
+/** Vue du menu du jour reçue par le client pour commander */
+export interface ClientDailyMenuView {
+  dailyOffer: DailyOffer;
+  optionsParCategorie: {
+    plats: CatalogItemWithOptionId[];
+    accompagnements: CatalogItemWithOptionId[];
+    viandes: CatalogItemWithOptionId[];
+  };
+  estViandeAutoriseeAujourdhui: boolean; // Selon formule et jour de la semaine
+  statutMenu: 'normal' | 'en_retard' | 'verrouille';
+  commandeExistante?: Order | null;
+  avisRepasPrecedentACompleter?: {
+    orderId: number;
+    date: string;
+  } | null;
+}
+
+export interface CatalogItemWithOptionId {
+  optionId: number;
+  catalogItemId: number;
+  nom: string;
+  categorie: ItemCategory;
+}
+
+/** Données envoyées par le client pour valider ou modifier son choix */
+export interface SubmitOrderDto {
+  dailyOfferId: number;
+  platOptionId: number;
+  accompagnementOptionId: number;
+  viandeOptionId?: number | null;
+}
+
+// --- Avis & Notation ---
+
+export interface SubmitReviewDto {
+  orderId: number;
+  noteEtoile?: number; // 1 à 5
+  commentaire?: string;
+}
+
+// --- Dashboard Admin & Suivi du jour ---
+
+/** Résumé en direct des commandes pour l'écran de suivi admin */
+export interface LivePreparationSummary {
+  date: string;
+  statutOffre: DailyOfferStatus;
+  totalClientsActifs: number;
+  totalLivraisonsPrevues: number;
+  quantitesParItem: {
+    categorie: ItemCategory;
+    nom: string;
+    quantite: number;
+  }[];
+  commandesDetaillees: ClientOrderDetailRow[];
+}
+
+export interface ClientOrderDetailRow {
+  orderId: number;
+  clientNom: string;
+  clientPrenom: string;
+  clientTelephone: string;
+  platNom: string;
+  accompagnementNom: string;
+  viandeNom?: string | null;
+  estDefaut: boolean;
+  prepare: boolean;
+  statut: OrderStatus;
+}
+
+/** Mise à jour du statut "préparé" par l'admin */
+export interface UpdatePreparationStatusDto {
+  prepare: boolean;
+}
+
+/** Vue fiche client détaillée côté admin avec ses 3 onglets */
+export interface ClientDetailView {
+  client: User;
+  abonnementActif?: Subscription | null;
+  joursRestants?: number;
+  historiqueAbonnements: Subscription[];
+  historiqueJours: {
+    date: string;
+    platNom: string;
+    accompagnementNom: string;
+    viandeNom?: string | null;
+    statut: OrderStatus;
+    estDefaut: boolean;
+  }[];
+  avis: {
+    orderId: number;
+    date: string;
+    noteEtoile?: number | null;
+    commentaire?: string | null;
+  }[];
+  noteMoyenne?: number | null;
 }

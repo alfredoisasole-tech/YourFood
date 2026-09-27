@@ -1,5 +1,5 @@
-// Ce fichier est le schéma Prisma pour l'application meal-app.
-// Basé sur le modèle de données de SPEC.md (section 7).
+// Schéma Prisma pour l'application meal-app (YourFood).
+// Source de vérité : SPEC.md (Spécification finale, section 8).
 
 generator client {
   provider = "prisma-client-js"
@@ -13,171 +13,184 @@ datasource db {
 // ─── UTILISATEURS ──────────────────────────────────────────────
 
 enum Role {
-  ADMIN
-  CLIENT
+  admin
+  client
 }
 
 model User {
-  id            String    @id @default(uuid())
-  firstName     String    @map("first_name")
-  lastName      String    @map("last_name")
-  phone         String    @unique
-  email         String?   @unique
-  passwordHash  String?   @map("password_hash")
-  role          Role      @default(CLIENT)
-  isActive      Boolean   @default(true) @map("is_active")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  id              Int       @id @default(autoincrement())
+  nom             String    @db.VarChar(100)
+  prenom          String    @db.VarChar(100)
+  telephone       String    @unique @db.VarChar(20) // Normalisé avec indicatif pays
+  motDePasseHash  String?   @map("mot_de_passe_hash") @db.VarChar(255) // NULL tant que le client n'a pas créé son mot de passe
+  role            Role      @default(client)
+  createdAt       DateTime  @default(now()) @map("created_at")
 
-  subscriptions Subscription[]
-  orders        Order[]
-  reviews       Review[]
+  subscriptions   Subscription[]
 
   @@map("users")
 }
 
 // ─── ABONNEMENTS ───────────────────────────────────────────────
 
-enum SubscriptionPlan {
-  BASIC     // 25 000 FC — Viande lundi et vendredi uniquement
-  PREMIUM   // 35 000 FC — Viande tous les jours
+enum Formule {
+  F_25000 @map("25000") // 25 000 FC — Viande lundi et vendredi uniquement
+  F_35000 @map("35000") // 35 000 FC — Viande toute la semaine
 }
 
-enum SubscriptionStatus {
-  ACTIVE
-  EXPIRED
-  CANCELLED
+enum StatutAbonnement {
+  actif
+  expire
 }
 
 model Subscription {
-  id        String             @id @default(uuid())
-  userId    String             @map("user_id")
-  plan      SubscriptionPlan
-  status    SubscriptionStatus @default(ACTIVE)
-  startDate DateTime           @map("start_date") @db.Date
-  endDate   DateTime           @map("end_date") @db.Date
-  bonus     String?            // Champ bonus — à définir avec l'admin
-  createdAt DateTime           @default(now()) @map("created_at")
-  updatedAt DateTime           @updatedAt @map("updated_at")
+  id          Int               @id @default(autoincrement())
+  userId      Int               @map("user_id")
+  formule     Formule
+  dateDebut   DateTime          @map("date_debut") @db.Date
+  dateFin     DateTime          @map("date_fin") @db.Date // Calculée automatiquement (dateDebut + durée)
+  bonus       String?           @db.VarChar(255) // Champ bonus non encore défini
+  statut      StatutAbonnement  @default(actif)
+  createdAt   DateTime          @default(now()) @map("created_at")
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   accessCodes AccessCode[]
+  orders      Order[]
 
   @@index([userId])
-  @@index([status])
+  @@index([statut])
   @@map("subscriptions")
 }
 
-// ─── CODES D'ACCÈS ─────────────────────────────────────────────
+// ─── CODES D'ACCÈS / ACTIVATION ────────────────────────────────
+
+enum AccessCodeType {
+  activation
+  reinitialisation
+}
 
 model AccessCode {
-  id                    String    @id @default(uuid())
-  subscriptionId        String    @map("subscription_id")
-  code                  String    @unique @db.VarChar(8)
-  firstConnectionDone   Boolean   @default(false) @map("first_connection_done")
-  createdAt             DateTime  @default(now()) @map("created_at")
+  id              Int             @id @default(autoincrement())
+  subscriptionId  Int             @map("subscription_id")
+  code            String          @unique @db.VarChar(8) // 2 initiales + 6 caractères
+  type            AccessCodeType
+  dateGeneration  DateTime        @default(now()) @map("date_generation")
+  utilise         Boolean         @default(false)
+  dateUtilisation DateTime?       @map("date_utilisation")
 
-  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  subscription    Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
   @@index([code])
   @@map("access_codes")
 }
 
-// ─── OFFRES JOURNALIÈRES ───────────────────────────────────────
+// ─── CATALOGUE DE PLATS ────────────────────────────────────────
+
+enum CategorieItem {
+  plat
+  accompagnement
+  viande
+}
+
+model CatalogItem {
+  id          Int            @id @default(autoincrement())
+  categorie   CategorieItem
+  nom         String         @db.VarChar(200)
+  actif       Boolean        @default(true) // false = masqué du catalogue actif sans être supprimé
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  offerOptions OfferOption[]
+
+  @@index([categorie])
+  @@index([actif])
+  @@map("catalog_items")
+}
+
+// ─── OFFRES DU JOUR ────────────────────────────────────────────
+
+enum StatutOffre {
+  ouvert
+  verrouille
+}
 
 model DailyOffer {
-  id                    String    @id @default(uuid())
-  date                  DateTime  @unique @db.Date
-  indicativeDeadline    String?   @map("indicative_deadline") // HH:mm format
-  isLocked              Boolean   @default(false) @map("is_locked")
-  createdAt             DateTime  @default(now()) @map("created_at")
-  updatedAt             DateTime  @updatedAt @map("updated_at")
+  id                    Int          @id @default(autoincrement())
+  date                  DateTime     @unique @db.Date
+  heureLimiteIndicative String       @default("13:00") @map("heure_limite_indicative") @db.VarChar(5) // Format HH:mm
+  statut                StatutOffre  @default(ouvert)
 
-  options     OfferOption[]
-  orders      Order[]
+  options               OfferOption[]
+  orders                Order[]
 
   @@index([date])
   @@map("daily_offers")
 }
 
-enum OfferCategory {
-  PLAT
-  ACCOMPAGNEMENT
-  VIANDE
-}
+// ─── OPTIONS D'OFFRE (TABLE DE LIAISON) ─────────────────────────
 
 model OfferOption {
-  id            String        @id @default(uuid())
-  dailyOfferId  String        @map("daily_offer_id")
-  category      OfferCategory
-  name          String
-  description   String?
-  imageUrl      String?       @map("image_url")
-  createdAt     DateTime      @default(now()) @map("created_at")
+  id            Int         @id @default(autoincrement())
+  dailyOfferId  Int         @map("daily_offer_id")
+  catalogItemId Int         @map("catalog_item_id")
 
-  dailyOffer DailyOffer @relation(fields: [dailyOfferId], references: [id], onDelete: Cascade)
-  orders     OrderItem[]
+  dailyOffer    DailyOffer  @relation(fields: [dailyOfferId], references: [id], onDelete: Cascade)
+  catalogItem   CatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Restrict)
 
+  platOrders           Order[] @relation("OrderPlat")
+  accompagnementOrders Order[] @relation("OrderAccompagnement")
+  viandeOrders         Order[] @relation("OrderViande")
+
+  @@unique([dailyOfferId, catalogItemId])
   @@index([dailyOfferId])
   @@map("offer_options")
 }
 
 // ─── COMMANDES ─────────────────────────────────────────────────
 
-enum OrderStatus {
-  PENDING
-  CONFIRMED
-  DELIVERED
-  CANCELLED
-  DEFAULT_ASSIGNED  // Non-choix — option attribuée par défaut
+enum StatutCommande {
+  en_attente
+  verrouillee
+  annulee
 }
 
 model Order {
-  id              String      @id @default(uuid())
-  userId          String      @map("user_id")
-  dailyOfferId    String      @map("daily_offer_id")
-  status          OrderStatus @default(PENDING)
-  isDefaultChoice Boolean     @default(false) @map("is_default_choice")
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
+  id                Int             @id @default(autoincrement())
+  dailyOfferId      Int             @map("daily_offer_id")
+  subscriptionId    Int             @map("subscription_id")
+  platId            Int             @map("plat_id")
+  accompagnementId  Int             @map("accompagnement_id")
+  viandeId          Int?            @map("viande_id") // NULL si la formule n'inclut pas la viande ce jour
+  statut            StatutCommande  @default(en_attente)
+  estDefaut         Boolean         @default(false) @map("est_defaut")
+  prepare           Boolean         @default(false) // Coché par l'admin lors de la préparation
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
 
-  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  dailyOffer DailyOffer   @relation(fields: [dailyOfferId], references: [id], onDelete: Cascade)
-  items      OrderItem[]
-  review     Review?
+  dailyOffer        DailyOffer      @relation(fields: [dailyOfferId], references: [id], onDelete: Cascade)
+  subscription      Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  plat              OfferOption     @relation("OrderPlat", fields: [platId], references: [id], onDelete: Restrict)
+  accompagnement    OfferOption     @relation("OrderAccompagnement", fields: [accompagnementId], references: [id], onDelete: Restrict)
+  viande            OfferOption?    @relation("OrderViande", fields: [viandeId], references: [id], onDelete: Restrict)
+  review            Review?
 
-  @@unique([userId, dailyOfferId])
-  @@index([userId])
+  @@unique([dailyOfferId, subscriptionId])
   @@index([dailyOfferId])
-  @@index([status])
+  @@index([subscriptionId])
+  @@index([statut])
   @@map("orders")
-}
-
-model OrderItem {
-  id            String @id @default(uuid())
-  orderId       String @map("order_id")
-  offerOptionId String @map("offer_option_id")
-
-  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  offerOption OfferOption @relation(fields: [offerOptionId], references: [id], onDelete: Cascade)
-
-  @@unique([orderId, offerOptionId])
-  @@map("order_items")
 }
 
 // ─── AVIS / NOTATION ──────────────────────────────────────────
 
 model Review {
-  id        String   @id @default(uuid())
-  orderId   String   @unique @map("order_id")
-  userId    String   @map("user_id")
-  rating    Int      // 1-5 étoiles
-  comment   String?
-  createdAt DateTime @default(now()) @map("created_at")
+  id          Int       @id @default(autoincrement())
+  orderId     Int       @unique @map("order_id")
+  commentaire String?   @db.Text
+  noteEtoile  Int?      @map("note_etoile") @db.SmallInt // 1 à 5
+  rempli      Boolean   @default(false)
+  createdAt   DateTime  @default(now()) @map("created_at")
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
   @@map("reviews")
 }
