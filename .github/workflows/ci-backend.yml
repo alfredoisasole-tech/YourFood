@@ -43,14 +43,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Prisma Client
+        run: npx prisma generate --schema=apps/backend/prisma/schema.prisma
+
       - name: Lint
         run: npm run lint --workspace=apps/backend
 
       - name: Typecheck
         run: npx tsc --noEmit --project apps/backend/tsconfig.json
-
-      - name: Generate Prisma Client
-        run: npx prisma generate --schema=apps/backend/prisma/schema.prisma
 
       - name: Run migrations
         run: npx prisma migrate deploy --schema=apps/backend/prisma/schema.prisma
