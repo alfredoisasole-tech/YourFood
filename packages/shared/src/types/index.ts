@@ -512,6 +512,13 @@ export interface ClientDetailView {
 
 // --- Statistiques (admin) ---
 
+export type TopDishPeriod = 'semaine' | 'mois' | 'annee' | 'historique';
+
+export interface TopDish {
+  nom: string;
+  quantite: number;
+}
+
 export interface StatsOverview {
   date: string;
   clientsActifs: number;
@@ -519,7 +526,8 @@ export interface StatsOverview {
   /** Livraisons du jour : clients couverts moins annulations */
   livraisons: number;
   avis: { moyenne: number | null; total: number };
-  platPlusCommande: { nom: string; quantite: number } | null;
+  /** Plat le plus commandé sur la semaine, le mois et l'année en cours (jusqu'à la date demandée), et depuis le début */
+  platsPlusCommandes: Record<TopDishPeriod, TopDish | null>;
   /** Abonnements « bientôt expirés » */
   aRenouveler: number;
   totauxParCategorie: {

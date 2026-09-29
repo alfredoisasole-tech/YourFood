@@ -133,7 +133,7 @@ Interface pensée d'abord pour le téléphone : **barre d'onglets en bas** (Accu
   - **Avis** (commentaires + note moyenne)
 
 ### Dashboard / Statistiques
-- En haut : nombre de clients actifs (sur le total), livraisons du jour, note moyenne des avis (sur le nombre d'avis), plat le plus commandé de la semaine, abonnements à renouveler (bientôt expirés)
+- En haut : nombre de clients actifs (sur le total), livraisons du jour, note moyenne des avis (sur le nombre d'avis), plat le plus commandé (une tuile pour la semaine, le mois et l'année en cours, et une pour tout l'historique), abonnements à renouveler (bientôt expirés)
 - Histogramme des livraisons par jour ouvré du mois (les jours à venir sont des prévisions)
 - Totaux par catégorie (Plat / Accompagnement / Viande), barres dynamiques selon le nombre réel d'options présentes, avec les nombres exacts affichés à côté (pas seulement du visuel)
 - Bouton « Détail client par client » → écran **Suivi du jour** : liste simple, client par client (pas de regroupement), avec case à cocher pour marquer « préparé » au fur et à mesure — limitée aux clients actifs. Chaque ligne indique si la commande est automatique (par défaut), choisie par le client, ou en attente de choix.
@@ -323,7 +323,7 @@ Avis facultatif laissé par le client, lié à une commande précise.
 | Abonnement expiré | Interface grisée | Idem, **connexion possible**, historique consultable |
 | Renouvellement | Nouvelle période | Commence **le lundi suivant** la fin de la période en cours |
 | Navigation admin | Barre latérale | Onglets sur mobile, barre latérale sur ordinateur ; écrans Accueil et Compte ajoutés |
-| Statistiques | Clients actifs, livraisons, catégories | + note moyenne, plat le plus commandé, à renouveler, histogramme mensuel |
+| Statistiques | Clients actifs, livraisons, catégories | + note moyenne, plat le plus commandé (semaine, mois, année, historique), à renouveler, histogramme mensuel |
 | Case « préparé » | Dans le détail des statistiques | Dans **Suivi du jour** |
 | Historique client | Lecture seule | + recherche par plat, filtre par dates, avis a posteriori |
 | Suppression d'un plat | Bloquée si sur une offre non verrouillée | Idem ; un plat déjà servi est **archivé** (historique intact) |

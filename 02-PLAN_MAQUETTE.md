@@ -26,7 +26,9 @@ Document de travail pour les deux développeurs. Il compare la maquette (`Maquet
 | Lien d'activation (B2) | Lien contenant le code **après le « # »** (jamais envoyé au serveur), envoi WhatsApp, **QR code**. Le jeton de lien séparé prévu au départ n'est plus nécessaire |
 | Annuler sans commande (B6) | L'annulation est enregistrée même sans choix préalable (plat et accompagnement facultatifs sur une commande annulée) : le client n'est plus servi par défaut. Réversible avant 20h |
 | Téléphone | **Facultatif** ; sans numéro, l'admin remet le lien ou le QR code en main propre |
-| Pastilles « MK · PM · JT · +9 » de l'accueil admin | Clients sans choix aujourd'hui (initiales) : à confirmer à l'intégration |
+| Pastilles « MK · PM · JT · +9 » de l'accueil admin | Initiales (première lettre du prénom et du nom) de clients ; affichées comme les clients sans choix aujourd'hui, le reste en « +N » : groupe à confirmer à l'intégration |
+| Plat le plus commandé (statistiques) | Quatre valeurs : semaine, mois, année en cours et historique général |
+| Migrations | Exécutées et vérifiées sur PostgreSQL (le schéma correspond exactement à la base) |
 
 ---
 

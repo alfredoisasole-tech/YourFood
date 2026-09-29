@@ -17,7 +17,7 @@ Monorepo npm workspaces :
 Architecture volontairement simple : un serveur, une base, pas de cache ni de file de messages.
 
 ## Commandes (depuis la racine)
-- `docker-compose up -d` : PostgreSQL local (Docker Desktop doit tourner). Copier `.env.example` vers `.env`.
+- `docker-compose up -d` : PostgreSQL local (Docker Desktop doit tourner). Copier `.env.example` vers `apps/backend/.env` (lu par le backend, le seed et Prisma). Si le port 5432 est déjà pris par un PostgreSQL installé sur la machine, mettre `POSTGRES_PORT=55432` dans un `.env` à la racine (lu par docker-compose) et ajuster le port dans `DATABASE_URL`.
 - `npm run dev:backend` / `npm run dev:frontend`
 - `npm run prisma:generate` puis `npm run prisma:migrate` (le generate doit précéder lint/typecheck/build).
 - `npm run lint`, `npm run typecheck`, `npm test` (vitest)
@@ -43,4 +43,4 @@ Architecture volontairement simple : un serveur, une base, pas de cache ni de fi
 
 ## État d'avancement
 - Fait : structure, CI, schéma Prisma + migrations, backend aligné sur la SPEC v3.1 (phase 1 du plan : auth en deux étapes, abonnements lundi-vendredi, verrouillage automatique, endpoints historique / stats / menus / clients), tests unitaires du backend.
-- À faire : appliquer les migrations sur une vraie base (Docker était éteint pendant le développement : SQL écrit à la main, non exécuté), tests d'intégration avec base, frontend (phases 2 à 5 du plan), README complet.
+- À faire : tests d'intégration avec base, frontend (phases 2 à 5 du plan, en attente de validation), README complet. Les migrations et le seed ont été exécutés et vérifiés sur PostgreSQL.

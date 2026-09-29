@@ -4,14 +4,17 @@
  * Définitions :
  * - clients actifs : abonnement en cours ou bientôt expiré ;
  * - livraisons d'un jour : clients dont l'abonnement couvre ce jour, moins ceux qui ont annulé ;
- * - « à renouveler » : abonnements bientôt expirés.
+ * - « à renouveler » : abonnements bientôt expirés ;
+ * - plat le plus commandé : par semaine, mois, année (en cours) et depuis le début.
  */
 
-import { StatutCommande } from '@prisma/client';
+import { Prisma, StatutCommande } from '@prisma/client';
 import {
   DeliveryDayStat,
   ItemCategory,
   StatsOverview,
+  TopDish,
+  TopDishPeriod,
   addDays,
   dayOfWeek,
   getSubscriptionState,
@@ -94,7 +97,7 @@ export class StatsService {
         moyenne: notes.length ? Number((notes.reduce((a, b) => a + b, 0) / notes.length).toFixed(1)) : null,
         total: reviews.length,
       },
-      platPlusCommande: await this.getTopDishOfWeek(date),
+      platsPlusCommandes: await this.getTopDishes(date),
       aRenouveler,
       totauxParCategorie: [ItemCategory.PLAT, ItemCategory.ACCOMPAGNEMENT, ItemCategory.VIANDE].map(
         (categorie) => {
@@ -107,25 +110,37 @@ export class StatsService {
     };
   }
 
-  /** Plat le plus commandé de la semaine en cours (du lundi à la date demandée) */
-  private async getTopDishOfWeek(date: string): Promise<{ nom: string; quantite: number } | null> {
+  /**
+   * Plat le plus commandé sur la semaine (depuis le lundi), le mois et l'année en cours jusqu'à `date`,
+   * et depuis le début. Les commandes annulées ne comptent pas.
+   */
+  private async getTopDishes(date: string): Promise<Record<TopDishPeriod, TopDish | null>> {
     const monday = addDays(date, -((dayOfWeek(date) + 6) % 7));
-    const orders = await prisma.order.findMany({
-      where: {
-        statut: { not: StatutCommande.annulee },
-        platId: { not: null },
-        dailyOffer: { date: { gte: toDbDate(monday), lte: toDbDate(date) } },
-      },
-      select: { plat: { select: { catalogItem: { select: { nom: true } } } } },
-    });
+    const [semaine, mois, annee, historique] = await Promise.all([
+      this.getTopDish(monday, date),
+      this.getTopDish(`${date.slice(0, 7)}-01`, date),
+      this.getTopDish(`${date.slice(0, 4)}-01-01`, date),
+      this.getTopDish(null, date),
+    ]);
+    return { semaine, mois, annee, historique };
+  }
 
-    const counts = new Map<string, number>();
-    for (const order of orders) {
-      const nom = order.plat?.catalogItem.nom;
-      if (nom) counts.set(nom, (counts.get(nom) ?? 0) + 1);
-    }
-    const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
-    return top ? { nom: top[0], quantite: top[1] } : null;
+  /** Plat le plus commandé entre deux dates (comptage par plat du catalogue, pas par menu du jour) */
+  private async getTopDish(from: string | null, to: string): Promise<TopDish | null> {
+    const fromClause = from ? Prisma.sql`AND d.date >= ${toDbDate(from)}` : Prisma.empty;
+    const rows = await prisma.$queryRaw<{ nom: string; quantite: bigint }[]>(Prisma.sql`
+      SELECT ci.nom AS nom, COUNT(*) AS quantite
+      FROM orders o
+      JOIN offer_options oo ON oo.id = o.plat_id
+      JOIN catalog_items ci ON ci.id = oo.catalog_item_id
+      JOIN daily_offers d ON d.id = o.daily_offer_id
+      WHERE o.statut <> 'annulee' AND d.date <= ${toDbDate(to)} ${fromClause}
+      GROUP BY ci.id, ci.nom
+      ORDER BY quantite DESC, ci.nom ASC
+      LIMIT 1
+    `);
+    const top = rows[0];
+    return top ? { nom: top.nom, quantite: Number(top.quantite) } : null;
   }
 
   /** Livraisons par jour ouvré d'un mois (« YYYY-MM »), les jours à venir étant des prévisions */
