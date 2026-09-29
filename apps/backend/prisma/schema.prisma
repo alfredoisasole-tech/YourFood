@@ -21,7 +21,8 @@ model User {
   id              Int       @id @default(autoincrement())
   nom             String    @db.VarChar(100)
   prenom          String    @db.VarChar(100)
-  telephone       String    @unique @db.VarChar(20) // Normalisé avec indicatif pays
+  telephone       String?   @unique @db.VarChar(20) // Facultatif. Normalisé avec indicatif pays
+  loginKey        String    @unique @map("login_key") @db.VarChar(220) // « prénom nom » sans accents ni majuscules : identifiant de connexion unique
   motDePasseHash  String?   @map("mot_de_passe_hash") @db.VarChar(255) // NULL tant que le client n'a pas créé son mot de passe
   role            Role      @default(client)
   createdAt       DateTime  @default(now()) @map("created_at")
@@ -97,12 +98,14 @@ model CatalogItem {
   categorie   CategorieItem
   nom         String         @db.VarChar(200)
   actif       Boolean        @default(true) // false = masqué du catalogue actif sans être supprimé
+  supprime    Boolean        @default(false) // true = supprimé par l'admin mais conservé pour l'historique des jours passés
   createdAt   DateTime       @default(now()) @map("created_at")
 
   offerOptions OfferOption[]
 
   @@index([categorie])
   @@index([actif])
+  @@index([supprime])
   @@map("catalog_items")
 }
 
@@ -157,8 +160,8 @@ model Order {
   id                Int             @id @default(autoincrement())
   dailyOfferId      Int             @map("daily_offer_id")
   subscriptionId    Int             @map("subscription_id")
-  platId            Int             @map("plat_id")
-  accompagnementId  Int             @map("accompagnement_id")
+  platId            Int?            @map("plat_id") // NULL uniquement si la commande est annulée sans choix préalable
+  accompagnementId  Int?            @map("accompagnement_id") // idem
   viandeId          Int?            @map("viande_id") // NULL si la formule n'inclut pas la viande ce jour
   statut            StatutCommande  @default(en_attente)
   estDefaut         Boolean         @default(false) @map("est_defaut")
@@ -168,8 +171,8 @@ model Order {
 
   dailyOffer        DailyOffer      @relation(fields: [dailyOfferId], references: [id], onDelete: Cascade)
   subscription      Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  plat              OfferOption     @relation("OrderPlat", fields: [platId], references: [id], onDelete: Restrict)
-  accompagnement    OfferOption     @relation("OrderAccompagnement", fields: [accompagnementId], references: [id], onDelete: Restrict)
+  plat              OfferOption?    @relation("OrderPlat", fields: [platId], references: [id], onDelete: Restrict)
+  accompagnement    OfferOption?    @relation("OrderAccompagnement", fields: [accompagnementId], references: [id], onDelete: Restrict)
   viande            OfferOption?    @relation("OrderViande", fields: [viandeId], references: [id], onDelete: Restrict)
   review            Review?
 

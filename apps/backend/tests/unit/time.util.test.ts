@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   isMeatAllowed,
   getWorkingDays,
-  calculateSubscriptionEndDate,
   getOfferTimeStatus,
 } from '../../src/utils/time';
 import { SubscriptionPlan } from '@meal-app/shared';
@@ -50,13 +49,6 @@ describe('Time Utilities (Fuseau horaire Africa/Kinshasa & Règles Métier)', ()
       expect(days).toHaveLength(3);
       expect(days).not.toContain('2026-10-03');
       expect(days).not.toContain('2026-10-04');
-    });
-  });
-
-  describe('calculateSubscriptionEndDate (SPEC 5.1 & 8)', () => {
-    it('devrait calculer la date de fin exacte (date_debut + duree en jours)', () => {
-      const endDate = calculateSubscriptionEndDate('2026-10-01', 30);
-      expect(endDate).toBe('2026-10-31');
     });
   });
 

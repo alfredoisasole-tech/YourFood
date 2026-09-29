@@ -1,211 +1,274 @@
 /**
- * Service Métier : Commandes, annulation, commande par défaut, verrouillage.
- * Conforme à SPEC.md (5.6, 5.7, 5.8, 8) et AG_RULES.md.
+ * Service Métier : Commandes, annulations, verrouillage à 20h et suivi de préparation.
+ * Conforme à SPEC.md (5.6, 5.7, 5.8, 6) et AG_RULES.md.
  */
 
+import { CategorieItem, Prisma, StatutOffre, StatutCommande } from '@prisma/client';
 import {
   SubmitOrderDto,
-  OrderStatus,
+  ItemCategory,
+  DailyOfferStatus,
   LivePreparationSummary,
   ClientOrderDetailRow,
-  DailyOfferStatus,
+  PendingClientRow,
+  OrderStatus,
+  isSubscriptionRunning,
 } from '@meal-app/shared';
-import { StatutCommande, StatutOffre, CategorieItem, StatutAbonnement } from '@prisma/client';
 import { prisma } from '../utils/prisma';
-import { isPastAbsoluteDeadline, getTodayDateString } from '../utils/time';
-import { BadRequestError, NotFoundError, ForbiddenError } from '../utils/errors';
-import dayjs from 'dayjs';
+import { ClientSubscriptionContext } from './subscription.service';
+import { ForbiddenError, BadRequestError, NotFoundError } from '../utils/errors';
+import {
+  fromDbDate,
+  getTodayDateString,
+  isLockTimeReached,
+  isMeatAllowed,
+  toDbDate,
+} from '../utils/time';
+import { computeDefaultChoices, OfferOptionRef } from '../utils/defaultOrder';
+import { toSharedFormule } from '../utils/mappers';
+
+type OptionWithItem = Prisma.OfferOptionGetPayload<{ include: { catalogItem: true } }>;
 
 export class OrderService {
   /**
-   * Prise de commande ou modification du choix par le client (SPEC 5.6).
+   * Garde commune aux actions du client (commander, annuler) :
+   * abonnement en cours, offre du jour uniquement, et avant le verrouillage de 20h.
    */
-  async submitOrder(subscriptionId: number, dto: SubmitOrderDto): Promise<{ orderId: number }> {
-    if (isPastAbsoluteDeadline()) {
+  private async loadOpenOfferForClient(
+    context: ClientSubscriptionContext,
+    dailyOfferId: number
+  ): Promise<Prisma.DailyOfferGetPayload<{ include: { options: { include: { catalogItem: true } } } }>> {
+    if (!isSubscriptionRunning(context.view.etat)) {
+      throw new ForbiddenError(
+        context.view.etat === 'expire'
+          ? "Ton abonnement est terminé : contacte l'administratrice pour le renouveler."
+          : "Ton abonnement n'a pas encore commencé."
+      );
+    }
+
+    const offer = await prisma.dailyOffer.findUnique({
+      where: { id: dailyOfferId },
+      include: { options: { include: { catalogItem: true } } },
+    });
+    if (!offer) {
+      throw new NotFoundError('Menu introuvable');
+    }
+
+    const offerDate = fromDbDate(offer.date);
+    if (offerDate !== getTodayDateString()) {
+      throw new ForbiddenError('Tu ne peux commander que pour le repas du jour.');
+    }
+
+    if (offer.statut === StatutOffre.verrouille || isLockTimeReached(offerDate)) {
+      await this.ensureLocked(offerDate);
       throw new ForbiddenError('Le menu est verrouillé après 20h. Aucune modification possible.');
     }
 
-    const offer = await prisma.dailyOffer.findUnique({ where: { id: dto.dailyOfferId } });
-    if (!offer || offer.statut === StatutOffre.verrouille) {
-      throw new ForbiddenError('L\'offre du jour est verrouillée.');
+    return offer;
+  }
+
+  private requireOption(
+    options: OptionWithItem[],
+    optionId: number,
+    categorie: CategorieItem,
+    label: string
+  ): OptionWithItem {
+    const option = options.find((o) => o.id === optionId);
+    if (option?.catalogItem.categorie !== categorie) {
+      throw new BadRequestError(`${label} choisi(e) ne fait pas partie du menu du jour.`);
+    }
+    return option;
+  }
+
+  /**
+   * Prise de commande ou modification du choix par le client (SPEC 5.6).
+   * Reprendre son repas après une annulation (avant 20h) est possible : la commande redevient « en attente ».
+   */
+  async submitOrder(
+    context: ClientSubscriptionContext,
+    dto: SubmitOrderDto
+  ): Promise<{ orderId: number }> {
+    const offer = await this.loadOpenOfferForClient(context, dto.dailyOfferId);
+    const offerDate = fromDbDate(offer.date);
+
+    this.requireOption(offer.options, dto.platOptionId, CategorieItem.plat, 'Le plat');
+    this.requireOption(
+      offer.options,
+      dto.accompagnementOptionId,
+      CategorieItem.accompagnement,
+      "L'accompagnement"
+    );
+
+    const menuHasMeat = offer.options.some((o) => o.catalogItem.categorie === CategorieItem.viande);
+    const meatIncluded = isMeatAllowed(context.view.formule, offerDate);
+
+    let viandeId: number | null = null;
+    if (meatIncluded && menuHasMeat) {
+      if (!dto.viandeOptionId) {
+        throw new BadRequestError('Choisis ta viande.');
+      }
+      viandeId = this.requireOption(
+        offer.options,
+        dto.viandeOptionId,
+        CategorieItem.viande,
+        'La viande'
+      ).id;
+    } else if (dto.viandeOptionId) {
+      throw new BadRequestError("Ta formule n'inclut pas la viande aujourd'hui.");
     }
 
-    // Vérifier que les options choisies appartiennent bien à l'offre
-    const optionIds = [dto.platOptionId, dto.accompagnementOptionId];
-    if (dto.viandeOptionId) optionIds.push(dto.viandeOptionId);
+    const choices = {
+      platId: dto.platOptionId,
+      accompagnementId: dto.accompagnementOptionId,
+      viandeId,
+      statut: StatutCommande.en_attente,
+      estDefaut: false,
+      prepare: false,
+    };
 
-    const validOptions = await prisma.offerOption.findMany({
-      where: { id: { in: optionIds }, dailyOfferId: dto.dailyOfferId },
-      include: { catalogItem: true },
-    });
-
-    if (validOptions.length !== optionIds.length) {
-      throw new BadRequestError('Une ou plusieurs options choisies ne sont pas valides pour cette offre.');
-    }
-
-    // Vérifier les catégories
-    const platOption = validOptions.find((o) => o.catalogItem.categorie === CategorieItem.plat);
-    const accOption = validOptions.find((o) => o.catalogItem.categorie === CategorieItem.accompagnement);
-
-    if (!platOption || !accOption) {
-      throw new BadRequestError('Vous devez choisir un plat et un accompagnement.');
-    }
-
-    // Upsert : créer ou mettre à jour la commande du jour
-    const existing = await prisma.order.findFirst({
-      where: { dailyOfferId: dto.dailyOfferId, subscriptionId },
-    });
-
-    if (existing) {
-      await prisma.order.update({
-        where: { id: existing.id },
-        data: {
-          platId: dto.platOptionId,
-          accompagnementId: dto.accompagnementOptionId,
-          viandeId: dto.viandeOptionId ?? null,
-          statut: StatutCommande.en_attente,
-          estDefaut: false,
+    const order = await prisma.order.upsert({
+      where: {
+        dailyOfferId_subscriptionId: {
+          dailyOfferId: offer.id,
+          subscriptionId: context.subscription.id,
         },
-      });
-      return { orderId: existing.id };
-    }
-
-    const order = await prisma.order.create({
-      data: {
-        dailyOfferId: dto.dailyOfferId,
-        subscriptionId,
-        platId: dto.platOptionId,
-        accompagnementId: dto.accompagnementOptionId,
-        viandeId: dto.viandeOptionId ?? null,
-        statut: StatutCommande.en_attente,
-        estDefaut: false,
-        prepare: false,
       },
+      create: { dailyOfferId: offer.id, subscriptionId: context.subscription.id, ...choices },
+      update: choices,
     });
 
     return { orderId: order.id };
   }
 
   /**
-   * Annulation de la commande du jour par le client (SPEC 5.7).
+   * Annulation du repas du jour par le client (SPEC 5.7), avant 20h.
+   * Elle est enregistrée même si le client n'avait rien confirmé : sans cela, l'attribution
+   * automatique de 20h lui enverrait un repas par défaut qu'il a refusé. L'annulation est
+   * idempotente et réversible tant que le menu n'est pas verrouillé.
    */
-  async cancelOrder(subscriptionId: number, dailyOfferId: number): Promise<void> {
-    if (isPastAbsoluteDeadline()) {
-      throw new ForbiddenError('Annulation impossible après 20h.');
-    }
+  async cancelOrder(context: ClientSubscriptionContext, dailyOfferId: number): Promise<void> {
+    const offer = await this.loadOpenOfferForClient(context, dailyOfferId);
 
-    const order = await prisma.order.findFirst({
-      where: { dailyOfferId, subscriptionId },
-    });
-
-    if (!order) {
-      throw new NotFoundError('Aucune commande trouvée pour ce jour.');
-    }
-
-    if (order.statut === StatutCommande.annulee) {
-      throw new BadRequestError('Cette commande est déjà annulée.');
-    }
-
-    await prisma.order.update({
-      where: { id: order.id },
-      data: { statut: StatutCommande.annulee },
+    await prisma.order.upsert({
+      where: {
+        dailyOfferId_subscriptionId: {
+          dailyOfferId: offer.id,
+          subscriptionId: context.subscription.id,
+        },
+      },
+      create: {
+        dailyOfferId: offer.id,
+        subscriptionId: context.subscription.id,
+        statut: StatutCommande.annulee,
+      },
+      update: { statut: StatutCommande.annulee, estDefaut: false, prepare: false },
     });
   }
 
   /**
-   * Processus de verrouillage à 20h et attribution des commandes par défaut (SPEC 5.8 & 8).
-   * Déclenché automatiquement par requête si now() >= 20h et l'offre n'est pas encore verrouillée.
+   * Verrouille l'offre d'une date si l'heure est venue (20h00 le jour même, ou date passée).
+   * Appelée à chaque lecture concernée et par la tâche planifiée : le verrouillage ne dépend donc
+   * jamais d'une action manuelle. Sans effet si l'offre est déjà verrouillée.
+   */
+  async ensureLocked(dateIso: string): Promise<void> {
+    if (!isLockTimeReached(dateIso)) {
+      return;
+    }
+    const offer = await prisma.dailyOffer.findUnique({ where: { date: toDbDate(dateIso) } });
+    if (offer && offer.statut === StatutOffre.ouvert) {
+      await this.lockAndAssignDefaults(offer.id);
+    }
+  }
+
+  /** Verrouille toutes les offres dont l'heure est venue (tâche planifiée, rattrapage après une panne) */
+  async lockDueOffers(): Promise<number> {
+    const openOffers = await prisma.dailyOffer.findMany({ where: { statut: StatutOffre.ouvert } });
+    let locked = 0;
+    for (const offer of openOffers) {
+      if (isLockTimeReached(fromDbDate(offer.date))) {
+        await this.lockAndAssignDefaults(offer.id);
+        locked++;
+      }
+    }
+    return locked;
+  }
+
+  /**
+   * Verrouillage à 20h et attribution des commandes par défaut (SPEC 5.8).
+   * Idempotent et sûr en cas d'appels simultanés : l'offre est « réservée » atomiquement en premier.
+   *
+   * Reçoivent une commande par défaut : les clients dont l'abonnement couvre ce jour et qui n'ont
+   * ni commandé ni annulé. Les annulations sont donc respectées.
    */
   async lockAndAssignDefaults(dailyOfferId: number): Promise<void> {
-    const offer = await prisma.dailyOffer.findUnique({
-      where: { id: dailyOfferId },
-      include: { options: { include: { catalogItem: true } } },
-    });
-
-    if (!offer || offer.statut === StatutOffre.verrouille) {
-      return; // Déjà verrouillé ou inexistant
-    }
-
-    // 1. Trouver tous les abonnements actifs
-    const activeSubscriptions = await prisma.subscription.findMany({
-      where: { statut: StatutAbonnement.actif },
-    });
-
-    // 2. Trouver les abonnements qui n'ont pas de commande (ou annulée)
-    const existingOrders = await prisma.order.findMany({
-      where: {
-        dailyOfferId,
-        statut: { not: StatutCommande.annulee },
-      },
-    });
-
-    const orderedSubIds = new Set(existingOrders.map((o) => o.subscriptionId));
-
-    const missingSubscriptions = activeSubscriptions.filter(
-      (s) => !orderedSubIds.has(s.id)
-    );
-
-    if (missingSubscriptions.length > 0) {
-      // 3. Pour chaque catégorie, calculer l'option la plus demandée
-      const platCounts = new Map<number, number>();
-      const accCounts = new Map<number, number>();
-      const viandeCounts = new Map<number, number>();
-
-      for (const order of existingOrders) {
-        platCounts.set(order.platId, (platCounts.get(order.platId) ?? 0) + 1);
-        accCounts.set(order.accompagnementId, (accCounts.get(order.accompagnementId) ?? 0) + 1);
-        if (order.viandeId) {
-          viandeCounts.set(order.viandeId, (viandeCounts.get(order.viandeId) ?? 0) + 1);
-        }
+    await prisma.$transaction(async (tx) => {
+      const offer = await tx.dailyOffer.findUnique({
+        where: { id: dailyOfferId },
+        include: { options: { include: { catalogItem: true } } },
+      });
+      if (!offer || offer.statut === StatutOffre.verrouille) {
+        return;
       }
 
-      const defaultPlat = this.getMostPopularOrFirst(platCounts, offer.options, CategorieItem.plat);
-      const defaultAcc = this.getMostPopularOrFirst(accCounts, offer.options, CategorieItem.accompagnement);
-      const defaultViande = this.getMostPopularOrFirst(viandeCounts, offer.options, CategorieItem.viande);
+      const claimed = await tx.dailyOffer.updateMany({
+        where: { id: dailyOfferId, statut: StatutOffre.ouvert },
+        data: { statut: StatutOffre.verrouille },
+      });
+      if (claimed.count === 0) {
+        return;
+      }
 
-      // 4. Créer les commandes par défaut
-      for (const sub of missingSubscriptions) {
-        await prisma.order.create({
-          data: {
+      const offerDate = fromDbDate(offer.date);
+      const existingOrders = await tx.order.findMany({ where: { dailyOfferId } });
+      const answered = new Set(existingOrders.map((o) => o.subscriptionId));
+
+      const coveringSubscriptions = await tx.subscription.findMany({
+        where: {
+          dateDebut: { lte: toDbDate(offerDate) },
+          dateFin: { gte: toDbDate(offerDate) },
+        },
+      });
+      const waiting = coveringSubscriptions.filter((s) => !answered.has(s.id));
+
+      if (waiting.length > 0) {
+        const optionRefs: OfferOptionRef[] = offer.options.map((o) => ({
+          id: o.id,
+          categorie: o.catalogItem.categorie as unknown as ItemCategory,
+        }));
+        const placed = existingOrders.filter((o) => o.statut !== StatutCommande.annulee);
+        const defaults = computeDefaultChoices(optionRefs, placed);
+
+        await tx.order.createMany({
+          data: waiting.map((sub) => ({
             dailyOfferId,
             subscriptionId: sub.id,
-            platId: defaultPlat,
-            accompagnementId: defaultAcc,
-            viandeId: defaultViande,
+            platId: defaults.platId,
+            accompagnementId: defaults.accompagnementId,
+            viandeId: isMeatAllowed(toSharedFormule(sub.formule), offerDate) ? defaults.viandeId : null,
             statut: StatutCommande.verrouillee,
             estDefaut: true,
-            prepare: false,
-          },
+          })),
         });
       }
-    }
 
-    // 5. Verrouiller toutes les commandes existantes
-    await prisma.order.updateMany({
-      where: { dailyOfferId, statut: StatutCommande.en_attente },
-      data: { statut: StatutCommande.verrouillee },
-    });
-
-    // 6. Passer l'offre en verrouillé
-    await prisma.dailyOffer.update({
-      where: { id: dailyOfferId },
-      data: { statut: StatutOffre.verrouille },
+      await tx.order.updateMany({
+        where: { dailyOfferId, statut: StatutCommande.en_attente },
+        data: { statut: StatutCommande.verrouillee },
+      });
     });
   }
 
   /**
-   * Résumé en direct des commandes pour le dashboard admin (SPEC 6).
+   * Résumé en direct des commandes pour l'écran « Suivi du jour » (SPEC 6).
    */
   async getLivePreparationSummary(dateStr?: string): Promise<LivePreparationSummary> {
     const targetDate = dateStr ?? getTodayDateString();
-    const dateObj = dayjs(targetDate).toDate();
+    await this.ensureLocked(targetDate);
 
     const offer = await prisma.dailyOffer.findUnique({
-      where: { date: dateObj },
+      where: { date: toDbDate(targetDate) },
       include: {
-        options: { include: { catalogItem: true } },
         orders: {
-          where: { statut: { not: StatutCommande.annulee } },
           include: {
             subscription: { include: { user: true } },
             plat: { include: { catalogItem: true } },
@@ -217,64 +280,71 @@ export class OrderService {
     });
 
     if (!offer) {
-      throw new NotFoundError(`Aucune offre trouvée pour le ${targetDate}`);
+      throw new NotFoundError(`Aucun menu publié pour le ${targetDate}`);
     }
 
-    // Quantités par item
-    const quantityMap = new Map<string, { categorie: string; nom: string; quantite: number }>();
-    for (const order of offer.orders) {
-      const platKey = `plat:${order.plat.catalogItem.nom}`;
-      const accKey = `acc:${order.accompagnement.catalogItem.nom}`;
-
-      const existing1 = quantityMap.get(platKey);
-      quantityMap.set(platKey, {
-        categorie: 'plat',
-        nom: order.plat.catalogItem.nom,
-        quantite: (existing1?.quantite ?? 0) + 1,
-      });
-
-      const existing2 = quantityMap.get(accKey);
-      quantityMap.set(accKey, {
-        categorie: 'accompagnement',
-        nom: order.accompagnement.catalogItem.nom,
-        quantite: (existing2?.quantite ?? 0) + 1,
-      });
-
-      if (order.viande) {
-        const viandeKey = `viande:${order.viande.catalogItem.nom}`;
-        const existing3 = quantityMap.get(viandeKey);
-        quantityMap.set(viandeKey, {
-          categorie: 'viande',
-          nom: order.viande.catalogItem.nom,
-          quantite: (existing3?.quantite ?? 0) + 1,
-        });
-      }
-    }
-
-    const activeCount = await prisma.subscription.count({
-      where: { statut: StatutAbonnement.actif },
+    const covering = await prisma.subscription.findMany({
+      where: {
+        dateDebut: { lte: toDbDate(targetDate) },
+        dateFin: { gte: toDbDate(targetDate) },
+      },
+      include: { user: true },
     });
 
-    const commandesDetaillees: ClientOrderDetailRow[] = offer.orders.map((o) => ({
+    const activeOrders = offer.orders.filter((o) => o.statut !== StatutCommande.annulee);
+    const cancelledCount = offer.orders.length - activeOrders.length;
+    const answered = new Set(offer.orders.map((o) => o.subscriptionId));
+
+    const quantities = new Map<string, { categorie: ItemCategory; nom: string; quantite: number }>();
+    const addQuantity = (categorie: ItemCategory, nom: string | undefined): void => {
+      if (!nom) return;
+      const key = `${categorie}:${nom}`;
+      const current = quantities.get(key);
+      quantities.set(key, { categorie, nom, quantite: (current?.quantite ?? 0) + 1 });
+    };
+    for (const order of activeOrders) {
+      addQuantity(ItemCategory.PLAT, order.plat?.catalogItem.nom);
+      addQuantity(ItemCategory.ACCOMPAGNEMENT, order.accompagnement?.catalogItem.nom);
+      addQuantity(ItemCategory.VIANDE, order.viande?.catalogItem.nom);
+    }
+
+    const commandesDetaillees: ClientOrderDetailRow[] = activeOrders.map((o) => ({
       orderId: o.id,
       clientNom: o.subscription.user.nom,
       clientPrenom: o.subscription.user.prenom,
       clientTelephone: o.subscription.user.telephone,
-      platNom: o.plat.catalogItem.nom,
-      accompagnementNom: o.accompagnement.catalogItem.nom,
+      formule: toSharedFormule(o.subscription.formule),
+      platNom: o.plat?.catalogItem.nom ?? '',
+      accompagnementNom: o.accompagnement?.catalogItem.nom ?? '',
       viandeNom: o.viande?.catalogItem.nom ?? null,
       estDefaut: o.estDefaut,
+      origine: o.estDefaut ? 'automatique' : 'choisi',
       prepare: o.prepare,
       statut: o.statut as unknown as OrderStatus,
     }));
 
+    const clientsEnAttente: PendingClientRow[] = covering
+      .filter((sub) => !answered.has(sub.id))
+      .map((sub) => ({
+        subscriptionId: sub.id,
+        clientNom: sub.user.nom,
+        clientPrenom: sub.user.prenom,
+        formule: toSharedFormule(sub.formule),
+      }));
+
     return {
       date: targetDate,
       statutOffre: offer.statut as unknown as DailyOfferStatus,
-      totalClientsActifs: activeCount,
-      totalLivraisonsPrevues: offer.orders.length,
-      quantitesParItem: Array.from(quantityMap.values()) as LivePreparationSummary['quantitesParItem'],
+      heureLimiteIndicative: offer.heureLimiteIndicative,
+      totalClientsActifs: covering.length,
+      totalLivraisonsPrevues: covering.length - cancelledCount,
+      totalPrepares: activeOrders.filter((o) => o.prepare).length,
+      quantitesParItem: Array.from(quantities.values()).sort(
+        (a, b) => a.categorie.localeCompare(b.categorie) || b.quantite - a.quantite
+      ),
       commandesDetaillees,
+      clientsEnAttente,
+      clientsAnnules: cancelledCount,
     };
   }
 
@@ -286,40 +356,13 @@ export class OrderService {
     if (!order) {
       throw new NotFoundError('Commande introuvable');
     }
+    if (order.statut === StatutCommande.annulee) {
+      throw new BadRequestError('Cette commande est annulée : rien à préparer.');
+    }
     await prisma.order.update({
       where: { id: orderId },
       data: { prepare },
     });
-  }
-
-  /**
-   * Retourne l'option la plus demandée pour une catégorie,
-   * ou la première option de cette catégorie si aucune commande n'existe (SPEC 5.8).
-   */
-  private getMostPopularOrFirst(
-    counts: Map<number, number>,
-    options: { id: number; catalogItem: { categorie: CategorieItem } }[],
-    categorie: CategorieItem
-  ): number {
-    const categoryOptions = options.filter((o) => o.catalogItem.categorie === categorie);
-    if (categoryOptions.length === 0) {
-      throw new Error(`Aucune option disponible pour la catégorie ${categorie}`);
-    }
-
-    if (counts.size === 0) {
-      return categoryOptions[0].id;
-    }
-
-    let maxId = categoryOptions[0].id;
-    let maxCount = 0;
-    for (const opt of categoryOptions) {
-      const count = counts.get(opt.id) ?? 0;
-      if (count > maxCount) {
-        maxCount = count;
-        maxId = opt.id;
-      }
-    }
-    return maxId;
   }
 }
 

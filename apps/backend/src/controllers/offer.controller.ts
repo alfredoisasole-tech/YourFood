@@ -5,15 +5,13 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { offerService } from '../services/offer.service';
-import { subscriptionRepository } from '../repositories/subscription.repository';
-import { NotFoundError, UnauthorizedError } from '../utils/errors';
+import { UnauthorizedError } from '../utils/errors';
 
 export class OfferController {
   /** POST /api/admin/offers/single */
   async publishSingle(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await offerService.publishSingle(req.body);
-      res.status(201).json(result);
+      res.status(201).json(await offerService.publishSingle(req.body));
     } catch (err) {
       next(err);
     }
@@ -22,8 +20,26 @@ export class OfferController {
   /** POST /api/admin/offers/multi-days */
   async publishMultiDays(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await offerService.publishMultiDays(req.body);
-      res.status(201).json(result);
+      res.status(201).json(await offerService.publishMultiDays(req.body));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** GET /api/admin/offers?from&to */
+  async listWeek(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { from, to } = req.query as { from: string; to: string };
+      res.status(200).json(await offerService.listWeek(from, to));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** PUT /api/admin/offers/:date */
+  async updateOffer(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      res.status(200).json(await offerService.updateOffer(req.params.date as string, req.body));
     } catch (err) {
       next(err);
     }
@@ -32,18 +48,10 @@ export class OfferController {
   /** GET /api/offers/today */
   async getClientDailyMenu(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const subscriptionId = req.user?.subscriptionId;
-      if (!subscriptionId) {
+      if (!req.clientContext) {
         throw new UnauthorizedError('Abonnement requis pour accéder au menu');
       }
-
-      const subscription = await subscriptionRepository.findById(subscriptionId);
-      if (!subscription) {
-        throw new NotFoundError('Abonnement introuvable');
-      }
-
-      const menu = await offerService.getClientDailyMenu(subscriptionId, subscription.formule);
-      res.status(200).json(menu);
+      res.status(200).json(await offerService.getClientDailyMenu(req.clientContext));
     } catch (err) {
       next(err);
     }

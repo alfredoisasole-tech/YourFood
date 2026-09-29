@@ -6,8 +6,13 @@
 import { Router } from 'express';
 import { clientController } from '../controllers/client.controller';
 import { authenticate, requireRole } from '../middlewares/auth';
-import { validateBody } from '../middlewares/validate';
-import { Role, createClientSchema, renewSubscriptionSchema } from '@meal-app/shared';
+import { validateBody, validateQuery } from '../middlewares/validate';
+import {
+  Role,
+  clientListQuerySchema,
+  createClientSchema,
+  renewSubscriptionSchema,
+} from '@meal-app/shared';
 
 const router = Router();
 
@@ -19,14 +24,19 @@ router.post('/', validateBody(createClientSchema), (req, res, next) => {
   clientController.createClient(req, res, next);
 });
 
-// Liste de tous les clients avec statut et jours restants
-router.get('/', (req, res, next) => {
-  clientController.getAllClients(req, res, next);
+// Liste des clients : état coloré, jours restants, compteurs, recherche (SPEC 6)
+router.get('/', validateQuery(clientListQuerySchema), (req, res, next) => {
+  clientController.listClients(req, res, next);
 });
 
 // Fiche détaillée d'un client
 router.get('/:id', (req, res, next) => {
   clientController.getClientDetail(req, res, next);
+});
+
+// Renvoyer le message de bienvenue (SPEC 6)
+router.post('/:id/resend-welcome', (req, res, next) => {
+  clientController.resendWelcome(req, res, next);
 });
 
 // Réinitialisation de mot de passe demandée par l'admin (SPEC 5.3)

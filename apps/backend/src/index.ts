@@ -7,12 +7,14 @@ import utc from 'dayjs/plugin/utc';
 
 import {
   authRoutes,
+  clientAreaRoutes,
   offerRoutes,
   orderRoutes,
   adminRoutes,
   reviewRoutes,
 } from './routes';
 import { errorHandler } from './middlewares/errorHandler';
+import { startLockScheduler } from './scheduler';
 
 // Configuration dayjs pour le fuseau horaire Africa/Kinshasa (SPEC 2 & 8)
 dayjs.extend(utc);
@@ -51,6 +53,7 @@ app.get('/api/health', (_req, res) => {
 
 // Montage des routes de l'API
 app.use('/api/auth', authRoutes);
+app.use('/api/client', clientAreaRoutes);
 app.use('/api/offers', offerRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/reviews', reviewRoutes);
@@ -78,6 +81,8 @@ if (process.env.NODE_ENV !== 'test') {
   }
 
   const PORT = parseInt(process.env.PORT ?? '3001', 10);
+
+  startLockScheduler();
 
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console

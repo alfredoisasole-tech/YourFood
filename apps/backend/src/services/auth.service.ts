@@ -5,37 +5,41 @@
 
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { User as PrismaUser } from '@prisma/client';
 import {
   FirstLoginDto,
   LoginDto,
+  VerifyCodeDto,
+  VerifyCodeResponse,
   ChangePasswordDto,
   AuthResponse,
+  SessionResponse,
+  AccessCodeType,
   Role,
-  SubscriptionStatus,
-  SubscriptionPlan,
 } from '@meal-app/shared';
 import { userRepository } from '../repositories/user.repository';
-import { accessCodeRepository } from '../repositories/accessCode.repository';
-import { subscriptionRepository } from '../repositories/subscription.repository';
-import {
-  BadRequestError,
-  UnauthorizedError,
-  ForbiddenError,
-  NotFoundError,
-} from '../utils/errors';
-import { nowKinshasa } from '../utils/time';
-import dayjs from 'dayjs';
+import { accessCodeRepository, AccessCodeWithOwner } from '../repositories/accessCode.repository';
+import { subscriptionService } from './subscription.service';
+import { prisma } from '../utils/prisma';
+import { BadRequestError, UnauthorizedError, ForbiddenError, NotFoundError } from '../utils/errors';
+import { loginKeyCandidates } from '../utils/loginKey';
+import { formatDateFr } from '../utils/whatsapp';
+import { fromDbDate } from '../utils/time';
+import { toUser } from '../utils/mappers';
 
 const BCRYPT_ROUNDS = 10;
 const JWT_EXPIRES_IN = '7d';
 
+/** Message volontairement unique : on ne révèle pas si c'est le nom ou le code qui est faux */
+const INVALID_CODE_MESSAGE = 'Ce code ne correspond pas à ce nom, ou il a déjà été utilisé.';
+
+interface VerifiedCode {
+  codeRecord: AccessCodeWithOwner;
+  user: PrismaUser;
+}
+
 export class AuthService {
-  private generateToken(payload: {
-    userId: number;
-    nom: string;
-    role: Role;
-    subscriptionId?: number;
-  }): string {
+  private generateToken(payload: { userId: number; nom: string; role: Role }): string {
     const secret = process.env.JWT_SECRET;
     if (!secret) {
       throw new Error('JWT_SECRET manquant dans la configuration');
@@ -44,78 +48,61 @@ export class AuthService {
   }
 
   /**
-   * Première connexion : nom + code à 8 caractères -> création du mot de passe.
-   * SPEC 5.3 & 7.
+   * Retrouve le code et vérifie qu'il est valable ET qu'il appartient bien au nom saisi.
+   * Le code seul ne suffit pas : c'est le couple nom + code qui ouvre l'accès (SPEC 5.3).
    */
-  async firstLogin(dto: FirstLoginDto): Promise<AuthResponse> {
+  private async verifyCodeOwnership(dto: VerifyCodeDto): Promise<VerifiedCode> {
     const codeRecord = await accessCodeRepository.findByCode(dto.code);
-
     if (!codeRecord || codeRecord.utilise) {
-      throw new BadRequestError('Code d\'activation invalide ou déjà utilisé');
+      throw new BadRequestError(INVALID_CODE_MESSAGE);
     }
 
-    // Récupération de l'abonnement et de l'utilisateur rattaché
-    const subscription = await subscriptionRepository.findById(codeRecord.subscriptionId);
-    if (!subscription) {
-      throw new NotFoundError('Abonnement introuvable pour ce code');
+    const user = codeRecord.subscription.user;
+    if (!loginKeyCandidates(dto.identifiant).includes(user.loginKey)) {
+      throw new BadRequestError(INVALID_CODE_MESSAGE);
     }
 
-    const user = await userRepository.findById(subscription.userId);
-    if (!user) {
-      throw new NotFoundError('Utilisateur introuvable');
-    }
-
-    // Vérification du nom
-    if (user.nom.trim().toLowerCase() !== dto.nom.trim().toLowerCase()) {
-      throw new BadRequestError('Le nom ne correspond pas à ce code d\'activation');
-    }
-
-    // Hachage du nouveau mot de passe
-    const hash = await bcrypt.hash(dto.nouveauMotDePasse, BCRYPT_ROUNDS);
-
-    // Mise à jour du mot de passe utilisateur
-    await userRepository.updatePassword(user.id, hash);
-
-    // Marquage du code comme utilisé
-    await accessCodeRepository.markAsUsed(codeRecord.id);
-
-    // Émission du token JWT
-    const token = this.generateToken({
-      userId: user.id,
-      nom: user.nom,
-      role: user.role as Role,
-      subscriptionId: subscription.id,
-    });
-
-    return {
-      token,
-      user: {
-        id: user.id,
-        nom: user.nom,
-        prenom: user.prenom,
-        telephone: user.telephone,
-        role: user.role as Role,
-        createdAt: user.createdAt.toISOString(),
-      },
-      activeSubscription: {
-        id: subscription.id,
-        userId: subscription.userId,
-        formule: subscription.formule as unknown as SubscriptionPlan,
-        dateDebut: dayjs(subscription.dateDebut).format('YYYY-MM-DD'),
-        dateFin: dayjs(subscription.dateFin).format('YYYY-MM-DD'),
-        bonus: subscription.bonus,
-        statut: subscription.statut as unknown as SubscriptionStatus,
-        createdAt: subscription.createdAt.toISOString(),
-      },
-    };
+    return { codeRecord, user };
   }
 
   /**
-   * Connexion classique : nom + mot de passe.
-   * SPEC 5.3 & 7.
+   * Étape 1 de la première connexion (« Code accepté, bienvenue ») : vérifie le couple nom + code
+   * sans le consommer. Le code n'est consommé qu'à la création du mot de passe.
+   */
+  async verifyCode(dto: VerifyCodeDto): Promise<VerifyCodeResponse> {
+    const { codeRecord, user } = await this.verifyCodeOwnership(dto);
+    return { prenom: user.prenom, type: codeRecord.type as unknown as AccessCodeType };
+  }
+
+  /**
+   * Étape 2 : création (ou nouveau choix, après réinitialisation) du mot de passe.
+   * Le code est consommé dans la même transaction : impossible de l'utiliser deux fois.
+   */
+  async firstLogin(dto: FirstLoginDto): Promise<AuthResponse> {
+    const { codeRecord, user } = await this.verifyCodeOwnership(dto);
+    const hash = await bcrypt.hash(dto.nouveauMotDePasse, BCRYPT_ROUNDS);
+
+    await prisma.$transaction(async (tx) => {
+      const claimed = await tx.accessCode.updateMany({
+        where: { id: codeRecord.id, utilise: false },
+        data: { utilise: true, dateUtilisation: new Date() },
+      });
+      if (claimed.count === 0) {
+        throw new BadRequestError(INVALID_CODE_MESSAGE);
+      }
+      await tx.user.update({ where: { id: user.id }, data: { motDePasseHash: hash } });
+    });
+
+    return this.buildAuthResponse(user);
+  }
+
+  /**
+   * Connexion classique : identifiant (« Prénom Nom ») + mot de passe.
+   * - Un abonnement expiré donne accès à une interface grisée (SPEC 5.11).
+   * - Un abonnement pas encore commencé est refusé avec sa date de début (SPEC 7).
    */
   async login(dto: LoginDto): Promise<AuthResponse> {
-    const user = await userRepository.findByNom(dto.nom);
+    const user = await userRepository.findByIdentifiant(dto.identifiant);
 
     if (!user) {
       throw new UnauthorizedError('Identifiants invalides');
@@ -123,7 +110,7 @@ export class AuthService {
 
     if (!user.motDePasseHash) {
       throw new BadRequestError(
-        'Votre compte n\'a pas encore été activé. Veuillez utiliser votre code d\'activation pour votre première connexion.'
+        "Ton compte n'est pas encore activé. Utilise le code reçu pour ta première connexion."
       );
     }
 
@@ -132,56 +119,30 @@ export class AuthService {
       throw new UnauthorizedError('Identifiants invalides');
     }
 
-    // Pour les clients : vérification de l'abonnement actif et de la date de début
-    let activeSub = null;
     if (user.role === 'client') {
-      const subscription = await subscriptionRepository.findActiveByUserId(user.id);
-      if (!subscription) {
+      const context = await subscriptionService.getCurrent(user.id);
+      if (!context) {
+        throw new ForbiddenError("Aucun abonnement n'est associé à ce compte");
+      }
+      if (context.view.etat === 'non_commence') {
         throw new ForbiddenError(
-          'Votre abonnement est expiré ou inactif. Veuillez contacter l\'administratrice.'
+          `Ton abonnement commence le ${formatDateFr(fromDbDate(context.subscription.dateDebut))}, on t'attend à table.`,
+          { code: 'ABONNEMENT_NON_COMMENCE', dateDebut: context.view.dateDebut }
         );
       }
-
-      // Le service réel ne démarre qu'à la date de début (SPEC 5.1 & 7)
-      const now = nowKinshasa();
-      const startDate = dayjs(subscription.dateDebut);
-      if (now.isBefore(startDate, 'day')) {
-        throw new ForbiddenError(
-          `Votre abonnement n'est pas encore actif (il débute le ${startDate.format('DD/MM/YYYY')})`
-        );
-      }
-
-      activeSub = {
-        id: subscription.id,
-        userId: subscription.userId,
-        formule: subscription.formule as unknown as SubscriptionPlan,
-        dateDebut: dayjs(subscription.dateDebut).format('YYYY-MM-DD'),
-        dateFin: dayjs(subscription.dateFin).format('YYYY-MM-DD'),
-        bonus: subscription.bonus,
-        statut: subscription.statut as unknown as SubscriptionStatus,
-        createdAt: subscription.createdAt.toISOString(),
-      };
     }
 
-    const token = this.generateToken({
-      userId: user.id,
-      nom: user.nom,
-      role: user.role as Role,
-      subscriptionId: activeSub?.id,
-    });
+    return this.buildAuthResponse(user);
+  }
 
-    return {
-      token,
-      user: {
-        id: user.id,
-        nom: user.nom,
-        prenom: user.prenom,
-        telephone: user.telephone,
-        role: user.role as Role,
-        createdAt: user.createdAt.toISOString(),
-      },
-      activeSubscription: activeSub,
-    };
+  /** Session courante : utilisateur + abonnement courant, recalculés à chaque appel */
+  async getSession(userId: number): Promise<SessionResponse> {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw new NotFoundError('Utilisateur introuvable');
+    }
+    const context = user.role === 'client' ? await subscriptionService.getCurrent(user.id) : null;
+    return { user: toUser(user), subscription: context?.view ?? null };
   }
 
   /**
@@ -196,11 +157,21 @@ export class AuthService {
 
     const match = await bcrypt.compare(dto.ancienMotDePasse, user.motDePasseHash);
     if (!match) {
-      throw new BadRequestError('L\'ancien mot de passe est incorrect');
+      throw new BadRequestError("L'ancien mot de passe est incorrect");
     }
 
     const newHash = await bcrypt.hash(dto.nouveauMotDePasse, BCRYPT_ROUNDS);
     await userRepository.updatePassword(user.id, newHash);
+  }
+
+  private async buildAuthResponse(user: PrismaUser): Promise<AuthResponse> {
+    const context = user.role === 'client' ? await subscriptionService.getCurrent(user.id) : null;
+
+    return {
+      token: this.generateToken({ userId: user.id, nom: user.nom, role: user.role as unknown as Role }),
+      user: toUser(user),
+      subscription: context?.view ?? null,
+    };
   }
 }
 

@@ -2,8 +2,10 @@
  * Types partagés pour l'application meal-app (YourFood).
  * Source de vérité unique pour les modèles de données et DTOs échangés
  * entre le backend (Node.js/Express) et le frontend (React).
- * Basé sur SPEC.md (Spécification finale).
+ * Basé sur SPEC.md (Spécification finale, v3.1).
  */
+
+import type { SubscriptionDuration, SubscriptionState } from '../utils/subscription';
 
 // ─── Enums ─────────────────────────────────────────────────────
 
@@ -13,11 +15,11 @@ export enum Role {
   CLIENT = 'client',
 }
 
-/** Formule d'abonnement (prix en FC) */
+/** Formule d'abonnement (prix hebdomadaire en FC) */
 export enum SubscriptionPlan {
-  /** 25 000 FC — Viande incluse uniquement le lundi et le vendredi */
+  /** 25 000 FC / semaine — Viande incluse uniquement le lundi et le vendredi */
   PLAN_25000 = '25000',
-  /** 35 000 FC — Viande incluse toute la semaine */
+  /** 35 000 FC / semaine — Viande incluse toute la semaine */
   PLAN_35000 = '35000',
 }
 
@@ -53,6 +55,9 @@ export enum OrderStatus {
   ANNULEE = 'annulee',
 }
 
+/** Heure de verrouillage absolue des commandes (SPEC 5.6) */
+export const LOCK_TIME = '20:00';
+
 // ─── Modèles Entités (Base de données / REST) ──────────────────
 
 /** Utilisateur (identité de connexion, admin ou client) */
@@ -60,7 +65,8 @@ export interface User {
   id: number;
   nom: string;
   prenom: string;
-  telephone: string;
+  /** Facultatif : sans numéro, l'admin remet le lien ou le QR code en main propre */
+  telephone: string | null;
   role: Role;
   createdAt: string;
 }
@@ -75,6 +81,16 @@ export interface Subscription {
   bonus?: string | null;
   statut: SubscriptionStatus;
   createdAt: string;
+}
+
+/** Abonnement enrichi de son état calculé à partir des dates (jamais du seul champ `statut`) */
+export interface SubscriptionView extends Subscription {
+  etat: SubscriptionState;
+  /** Jours ouvrés restants, aujourd'hui inclus */
+  joursRestants: number;
+  dureeSemaines: number;
+  /** Prix hebdomadaire × nombre de semaines, en FC */
+  totalFc: number;
 }
 
 /** Code d'accès à 8 caractères (activation initiale ou réinitialisation) */
@@ -114,21 +130,21 @@ export interface OfferOption {
   catalogItem?: CatalogItem;
 }
 
-/** Commande journalière d'un client (triplet de choix) */
+/** Commande journalière d'un client (triplet de choix, ou jour annulé sans aucun choix) */
 export interface Order {
   id: number;
   dailyOfferId: number;
   subscriptionId: number;
-  platId: number;
-  accompagnementId: number;
+  platId: number | null;
+  accompagnementId: number | null;
   viandeId?: number | null;
   statut: OrderStatus;
   estDefaut: boolean;
   prepare: boolean;
   createdAt: string;
   updatedAt: string;
-  plat?: OfferOption;
-  accompagnement?: OfferOption;
+  plat?: OfferOption | null;
+  accompagnement?: OfferOption | null;
   viande?: OfferOption | null;
   review?: Review | null;
 }
@@ -151,32 +167,59 @@ export interface Review {
 export interface CreateClientDto {
   nom: string;
   prenom: string;
-  telephone: string;
+  /** Facultatif */
+  telephone?: string;
   formule: SubscriptionPlan;
-  dureeJours: number;
-  dateDebut: string; // YYYY-MM-DD
+  duree: SubscriptionDuration;
+  /** Un lundi. Par défaut : le prochain lundi */
+  dateDebut?: string;
   bonus?: string;
+}
+
+/**
+ * Tout ce dont l'admin a besoin pour transmettre l'accès au client :
+ * lien (que le frontend peut aussi afficher en QR code), code, et message WhatsApp.
+ */
+export interface AccessDelivery {
+  code: string;
+  /** Code groupé par 4 pour la lecture : « RN7Q 3M8K » */
+  codeAffichage: string;
+  /** Lien de connexion, code inclus après le « # » (jamais envoyé au serveur) */
+  lien: string;
+  /** null si le client n'a pas de numéro de téléphone */
+  whatsappUrl: string | null;
+  message: string;
 }
 
 /** Réponse après inscription d'un client */
 export interface CreateClientResponse {
   client: User;
-  subscription: Subscription;
-  accessCode: string;
-  activationLink: string;
-  whatsappUrl: string;
+  subscription: SubscriptionView;
+  acces: AccessDelivery;
 }
 
-/** Première connexion du client : saisie du nom, du code reçu et création de son mot de passe */
+/** Vérification (sans consommer) du couple identifiant + code reçu par le client */
+export interface VerifyCodeDto {
+  identifiant: string;
+  code: string;
+}
+
+export interface VerifyCodeResponse {
+  prenom: string;
+  type: AccessCodeType;
+}
+
+/** Première connexion du client : identifiant, code reçu et création de son mot de passe */
 export interface FirstLoginDto {
-  nom: string;
+  /** « Prénom Nom », insensible à la casse et aux accents */
+  identifiant: string;
   code: string;
   nouveauMotDePasse: string;
 }
 
-/** Connexions ultérieures : nom + mot de passe */
+/** Connexions ultérieures : identifiant + mot de passe */
 export interface LoginDto {
-  nom: string;
+  identifiant: string;
   motDePasse: string;
 }
 
@@ -184,18 +227,19 @@ export interface LoginDto {
 export interface AuthResponse {
   token: string;
   user: User;
-  activeSubscription?: Subscription | null;
+  /** null pour l'admin */
+  subscription: SubscriptionView | null;
+}
+
+/** Session courante (GET /auth/me) */
+export interface SessionResponse {
+  user: User;
+  subscription: SubscriptionView | null;
 }
 
 /** Demande de réinitialisation du mot de passe (initiée par l'admin depuis la fiche client) */
 export interface ResetPasswordRequestDto {
   subscriptionId: number;
-}
-
-/** Réponse suite à une réinitialisation de mot de passe */
-export interface ResetPasswordResponse {
-  code: string;
-  whatsappUrl: string;
 }
 
 /** Modification de son mot de passe par le client connecté */
@@ -208,8 +252,10 @@ export interface ChangePasswordDto {
 
 /** Demande de renouvellement ou prolongation d'un abonnement existant */
 export interface RenewSubscriptionDto {
-  dureeJours: number;
+  duree: SubscriptionDuration;
   formule?: SubscriptionPlan;
+  /** Un lundi. Par défaut : le lundi qui suit la fin de la période en cours (ou le prochain lundi si expirée) */
+  dateDebut?: string;
 }
 
 // --- Catalogue de plats ---
@@ -222,6 +268,7 @@ export interface CreateCatalogItemDto {
 
 export interface UpdateCatalogItemDto {
   nom?: string;
+  categorie?: ItemCategory;
   actif?: boolean;
 }
 
@@ -229,9 +276,10 @@ export interface UpdateCatalogItemDto {
 
 /** Publication pour un jour unique */
 export interface PublishSingleOfferDto {
-  date: string; // YYYY-MM-DD
+  date: string; // YYYY-MM-DD, jour ouvré
   heureLimiteIndicative?: string; // HH:mm, défaut '13:00'
-  catalogItemIds: number[]; // Exactement 6 items : 2 plats, 2 accompagnements, 2 viandes
+  /** Au moins un plat, un accompagnement et une viande (nombre libre par catégorie) */
+  catalogItemIds: number[];
 }
 
 /** Publication pour plusieurs jours ouvrés */
@@ -239,26 +287,65 @@ export interface PublishMultiDaysOfferDto {
   dateDebut: string; // YYYY-MM-DD
   nombreJours: number; // Nombre de jours ouvrés (lundi à vendredi)
   heureLimiteIndicative?: string;
-  catalogItemIds: number[]; // Les 6 items du catalogue dupliqués sur chaque jour
+  catalogItemIds: number[]; // Le même menu, dupliqué sur chaque jour
+}
+
+/** Modification d'un menu à venir (SPEC 5.5 : chaque jour reste modifiable) */
+export interface UpdateOfferDto {
+  heureLimiteIndicative?: string;
+  catalogItemIds?: number[];
+}
+
+/** Menu publié tel que vu par l'admin (liste « Menus à venir », bandeau de la semaine) */
+export interface AdminOfferView {
+  id: number;
+  date: string;
+  statut: DailyOfferStatus;
+  heureLimiteIndicative: string;
+  plats: CatalogItemWithOptionId[];
+  accompagnements: CatalogItemWithOptionId[];
+  viandes: CatalogItemWithOptionId[];
+  /** Clients dont l'abonnement couvre ce jour, moins les annulations */
+  livraisonsPrevues: number;
+  commandesRecues: number;
+}
+
+/** Jour du bandeau de la semaine : publié ou non, avec les livraisons attendues */
+export interface WeekDayView {
+  date: string;
+  publie: boolean;
+  offre: AdminOfferView | null;
+  livraisonsPrevues: number;
 }
 
 // --- Menu du jour & Commandes (côté client) ---
 
+export type MenuTimeStatus = 'normal' | 'en_retard' | 'verrouille' | 'aucun_menu';
+
 /** Vue du menu du jour reçue par le client pour commander */
 export interface ClientDailyMenuView {
-  dailyOffer: DailyOffer;
+  date: string;
+  formule: SubscriptionPlan;
+  etatAbonnement: SubscriptionState;
+  dateFinAbonnement: string;
+  /** null tant que l'admin n'a rien publié pour aujourd'hui */
+  dailyOffer: DailyOffer | null;
   optionsParCategorie: {
     plats: CatalogItemWithOptionId[];
     accompagnements: CatalogItemWithOptionId[];
     viandes: CatalogItemWithOptionId[];
   };
   estViandeAutoriseeAujourdhui: boolean; // Selon formule et jour de la semaine
-  statutMenu: 'normal' | 'en_retard' | 'verrouille';
+  statutMenu: MenuTimeStatus;
+  heureVerrouillage: string; // '20:00'
+  /** Commande du jour : choisie, attribuée par défaut (estDefaut) ou annulée (statut annulee) */
   commandeExistante?: Order | null;
   avisRepasPrecedentACompleter?: {
     orderId: number;
     date: string;
   } | null;
+  /** Heure du serveur (ISO), pour synchroniser le compte à rebours */
+  serverNow: string;
 }
 
 export interface CatalogItemWithOptionId {
@@ -276,6 +363,29 @@ export interface SubmitOrderDto {
   viandeOptionId?: number | null;
 }
 
+/** Filtres de l'historique client */
+export interface ClientHistoryQuery {
+  from?: string; // YYYY-MM-DD
+  to?: string; // YYYY-MM-DD
+  /** Recherche par nom de plat */
+  q?: string;
+}
+
+/** Une ligne de l'historique du client (lecture seule) */
+export interface ClientHistoryEntry {
+  orderId: number;
+  date: string;
+  statut: OrderStatus;
+  estDefaut: boolean;
+  platNom: string | null;
+  accompagnementNom: string | null;
+  viandeNom: string | null;
+  noteEtoile: number | null;
+  commentaire: string | null;
+  /** Le client peut encore laisser un avis sur ce repas */
+  avisPossible: boolean;
+}
+
 // --- Avis & Notation ---
 
 export interface SubmitReviewDto {
@@ -284,33 +394,64 @@ export interface SubmitReviewDto {
   commentaire?: string;
 }
 
+/** Avis dans le flux global de l'admin */
+export interface AdminReviewView {
+  reviewId: number;
+  clientNom: string;
+  clientPrenom: string;
+  /** Date du repas noté */
+  date: string;
+  noteEtoile: number | null;
+  commentaire: string | null;
+  repas: string;
+  createdAt: string;
+}
+
 // --- Dashboard Admin & Suivi du jour ---
+
+/** Origine d'une ligne du suivi : choix du client, attribution automatique, ou pas encore de choix */
+export type OrderOrigin = 'choisi' | 'automatique' | 'en_attente';
 
 /** Résumé en direct des commandes pour l'écran de suivi admin */
 export interface LivePreparationSummary {
   date: string;
   statutOffre: DailyOfferStatus;
+  heureLimiteIndicative: string;
   totalClientsActifs: number;
   totalLivraisonsPrevues: number;
+  totalPrepares: number;
   quantitesParItem: {
     categorie: ItemCategory;
     nom: string;
     quantite: number;
   }[];
   commandesDetaillees: ClientOrderDetailRow[];
+  /** Clients dont l'abonnement couvre le jour et qui n'ont encore rien choisi */
+  clientsEnAttente: PendingClientRow[];
+  /** Clients ayant annulé leur repas du jour */
+  clientsAnnules: number;
 }
 
 export interface ClientOrderDetailRow {
   orderId: number;
   clientNom: string;
   clientPrenom: string;
-  clientTelephone: string;
+  clientTelephone: string | null;
+  formule: SubscriptionPlan;
   platNom: string;
   accompagnementNom: string;
   viandeNom?: string | null;
   estDefaut: boolean;
+  origine: OrderOrigin;
   prepare: boolean;
   statut: OrderStatus;
+}
+
+export interface PendingClientRow {
+  subscriptionId: number;
+  clientNom: string;
+  clientPrenom: string;
+  formule: SubscriptionPlan;
 }
 
 /** Mise à jour du statut "préparé" par l'admin */
@@ -318,16 +459,43 @@ export interface UpdatePreparationStatusDto {
   prepare: boolean;
 }
 
+// --- Clients (admin) ---
+
+export interface ClientListRow {
+  id: number;
+  subscriptionId: number | null;
+  nom: string;
+  prenom: string;
+  telephone: string | null;
+  formule: SubscriptionPlan | null;
+  etat: SubscriptionState | null;
+  joursRestants: number;
+  dateFin: string | null;
+}
+
+/** Filtres de la liste : « actif » regroupe aussi les abonnements pas encore commencés */
+export type ClientListFilter = 'actif' | 'bientot_expire' | 'expire';
+
+export interface ClientListView {
+  clients: ClientListRow[];
+  compteurs: {
+    tous: number;
+    actifs: number;
+    bientotExpires: number;
+    expires: number;
+  };
+}
+
 /** Vue fiche client détaillée côté admin avec ses 3 onglets */
 export interface ClientDetailView {
   client: User;
-  abonnementActif?: Subscription | null;
-  joursRestants?: number;
-  historiqueAbonnements: Subscription[];
+  abonnementCourant: SubscriptionView | null;
+  historiqueAbonnements: SubscriptionView[];
   historiqueJours: {
+    orderId: number;
     date: string;
-    platNom: string;
-    accompagnementNom: string;
+    platNom: string | null;
+    accompagnementNom: string | null;
     viandeNom?: string | null;
     statut: OrderStatus;
     estDefaut: boolean;
@@ -335,8 +503,37 @@ export interface ClientDetailView {
   avis: {
     orderId: number;
     date: string;
+    repas: string;
     noteEtoile?: number | null;
     commentaire?: string | null;
   }[];
   noteMoyenne?: number | null;
+}
+
+// --- Statistiques (admin) ---
+
+export interface StatsOverview {
+  date: string;
+  clientsActifs: number;
+  clientsTotal: number;
+  /** Livraisons du jour : clients couverts moins annulations */
+  livraisons: number;
+  avis: { moyenne: number | null; total: number };
+  platPlusCommande: { nom: string; quantite: number } | null;
+  /** Abonnements « bientôt expirés » */
+  aRenouveler: number;
+  totauxParCategorie: {
+    categorie: ItemCategory;
+    items: { nom: string; quantite: number }[];
+    total: number;
+  }[];
+}
+
+export interface DeliveryDayStat {
+  date: string;
+  livraisons: number;
+  /** Part des clients actifs ce jour-là, en pourcentage */
+  pourcentage: number;
+  /** true pour les jours à venir (prévision) */
+  prevu: boolean;
 }

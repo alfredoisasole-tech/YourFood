@@ -6,11 +6,12 @@
 import { Router } from 'express';
 import { offerController } from '../controllers/offer.controller';
 import { authenticate } from '../middlewares/auth';
+import { loadClientContext } from '../middlewares/clientContext';
 
 const router = Router();
 
-// Menu du jour personnalisé pour le client connecté
-router.get('/today', authenticate, (req, res, next) => {
+// Menu du jour personnalisé pour le client connecté (accessible aussi en abonnement expiré, grisé)
+router.get('/today', authenticate, loadClientContext, (req, res, next) => {
   offerController.getClientDailyMenu(req, res, next);
 });
 

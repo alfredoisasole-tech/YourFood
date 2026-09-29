@@ -7,12 +7,12 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { Role } from '@meal-app/shared';
 import { UnauthorizedError, ForbiddenError } from '../utils/errors';
+import type { ClientSubscriptionContext } from '../services/subscription.service';
 
 export interface JwtPayload {
   userId: number;
   role: Role;
   nom: string;
-  subscriptionId?: number;
 }
 
 declare global {
@@ -20,6 +20,8 @@ declare global {
   namespace Express {
     interface Request {
       user?: JwtPayload;
+      /** Abonnement courant du client, renseigné par le middleware loadClientContext */
+      clientContext?: ClientSubscriptionContext;
     }
   }
 }

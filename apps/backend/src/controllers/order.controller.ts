@@ -11,40 +11,34 @@ export class OrderController {
   /** POST /api/orders - Soumettre ou modifier un choix */
   async submitOrder(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const subscriptionId = req.user?.subscriptionId;
-      if (!subscriptionId) {
+      if (!req.clientContext) {
         throw new UnauthorizedError('Abonnement requis pour commander');
       }
-
-      const result = await orderService.submitOrder(subscriptionId, req.body);
-      res.status(200).json(result);
+      res.status(200).json(await orderService.submitOrder(req.clientContext, req.body));
     } catch (err) {
       next(err);
     }
   }
 
-  /** POST /api/orders/:dailyOfferId/cancel - Annuler la commande */
+  /** POST /api/orders/:dailyOfferId/cancel - Annuler le repas du jour (même sans commande préalable) */
   async cancelOrder(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const subscriptionId = req.user?.subscriptionId;
-      if (!subscriptionId) {
+      if (!req.clientContext) {
         throw new UnauthorizedError('Abonnement requis');
       }
-
       const dailyOfferId = parseInt(req.params.dailyOfferId as string, 10);
-      await orderService.cancelOrder(subscriptionId, dailyOfferId);
-      res.status(200).json({ message: 'Commande annulée avec succès' });
+      await orderService.cancelOrder(req.clientContext, dailyOfferId);
+      res.status(200).json({ message: 'Repas annulé' });
     } catch (err) {
       next(err);
     }
   }
 
-  /** GET /api/admin/orders/live - Vue directe dashboard préparation */
+  /** GET /api/admin/orders/live - Vue directe « Suivi du jour » */
   async getLiveSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const date = req.query.date as string | undefined;
-      const summary = await orderService.getLivePreparationSummary(date);
-      res.status(200).json(summary);
+      res.status(200).json(await orderService.getLivePreparationSummary(date));
     } catch (err) {
       next(err);
     }
@@ -54,8 +48,7 @@ export class OrderController {
   async updatePreparationStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const orderId = parseInt(req.params.orderId as string, 10);
-      const { prepare } = req.body;
-      await orderService.updatePreparationStatus(orderId, Boolean(prepare));
+      await orderService.updatePreparationStatus(orderId, Boolean(req.body.prepare));
       res.status(200).json({ message: 'Statut de préparation mis à jour' });
     } catch (err) {
       next(err);

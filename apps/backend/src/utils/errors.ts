@@ -31,8 +31,8 @@ export class UnauthorizedError extends AppError {
 }
 
 export class ForbiddenError extends AppError {
-  constructor(message = 'Accès interdit') {
-    super(message, 403);
+  constructor(message = 'Accès interdit', details?: unknown) {
+    super(message, 403, details);
   }
 }
 
@@ -43,7 +43,7 @@ export class NotFoundError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message = 'Conflit de données') {
-    super(message, 409);
+  constructor(message = 'Conflit de données', details?: unknown) {
+    super(message, 409, details);
   }
 }

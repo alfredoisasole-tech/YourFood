@@ -4,24 +4,26 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { ClientListFilter } from '@meal-app/shared';
 import { clientService } from '../services/client.service';
+import { historyService } from '../services/history.service';
+import { UnauthorizedError } from '../utils/errors';
 
 export class ClientController {
   /** POST /api/admin/clients */
   async createClient(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await clientService.createClient(req.body);
-      res.status(201).json(result);
+      res.status(201).json(await clientService.createClient(req.body));
     } catch (err) {
       next(err);
     }
   }
 
-  /** GET /api/admin/clients */
-  async getAllClients(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  /** GET /api/admin/clients?q&etat */
+  async listClients(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const clients = await clientService.getAllClients();
-      res.status(200).json(clients);
+      const { q, etat } = req.query as { q?: string; etat?: ClientListFilter };
+      res.status(200).json(await clientService.listClients({ q, etat }));
     } catch (err) {
       next(err);
     }
@@ -31,30 +33,49 @@ export class ClientController {
   async getClientDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = parseInt(req.params.id as string, 10);
-      const detail = await clientService.getClientDetail(userId);
-      res.status(200).json(detail);
+      res.status(200).json(await clientService.getClientDetail(userId));
     } catch (err) {
       next(err);
     }
   }
 
-  /** POST /api/admin/clients/:id/reset-password */
+  /** POST /api/admin/clients/:id/resend-welcome */
+  async resendWelcome(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = parseInt(req.params.id as string, 10);
+      res.status(200).json(await clientService.resendWelcome(userId));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** POST /api/admin/clients/:subscriptionId/reset-password */
   async resetPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const subscriptionId = parseInt(req.params.subscriptionId as string, 10);
-      const result = await clientService.resetPassword(subscriptionId);
-      res.status(200).json(result);
+      res.status(200).json(await clientService.resetPassword(subscriptionId));
     } catch (err) {
       next(err);
     }
   }
 
-  /** POST /api/admin/clients/:id/renew */
+  /** POST /api/admin/clients/:subscriptionId/renew */
   async renewSubscription(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const subscriptionId = parseInt(req.params.subscriptionId as string, 10);
-      const result = await clientService.renewSubscription(subscriptionId, req.body);
-      res.status(200).json(result);
+      res.status(200).json(await clientService.renewSubscription(subscriptionId, req.body));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** GET /api/client/history?from&to&q - Historique du client connecté */
+  async getMyHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new UnauthorizedError('Authentification requise');
+      }
+      res.status(200).json(await historyService.getClientHistory(req.user.userId, req.query));
     } catch (err) {
       next(err);
     }

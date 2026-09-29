@@ -5,13 +5,22 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { authService } from '../services/auth.service';
+import { UnauthorizedError } from '../utils/errors';
 
 export class AuthController {
+  /** POST /api/auth/verify-code */
+  async verifyCode(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      res.status(200).json(await authService.verifyCode(req.body));
+    } catch (err) {
+      next(err);
+    }
+  }
+
   /** POST /api/auth/first-login */
   async firstLogin(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await authService.firstLogin(req.body);
-      res.status(200).json(result);
+      res.status(200).json(await authService.firstLogin(req.body));
     } catch (err) {
       next(err);
     }
@@ -20,8 +29,19 @@ export class AuthController {
   /** POST /api/auth/login */
   async login(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await authService.login(req.body);
-      res.status(200).json(result);
+      res.status(200).json(await authService.login(req.body));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** GET /api/auth/me */
+  async me(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new UnauthorizedError('Authentification requise');
+      }
+      res.status(200).json(await authService.getSession(req.user.userId));
     } catch (err) {
       next(err);
     }
@@ -30,12 +50,10 @@ export class AuthController {
   /** PUT /api/auth/change-password */
   async changePassword(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const userId = req.user?.userId;
-      if (!userId) {
-        res.status(401).json({ error: 'Authentification requise' });
-        return;
+      if (!req.user) {
+        throw new UnauthorizedError('Authentification requise');
       }
-      await authService.changePassword(userId, req.body);
+      await authService.changePassword(req.user.userId, req.body);
       res.status(200).json({ message: 'Mot de passe modifié avec succès' });
     } catch (err) {
       next(err);

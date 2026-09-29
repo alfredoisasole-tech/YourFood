@@ -5,8 +5,10 @@
  * Initialise :
  * 1. Un compte administrateur initial (mot de passe haché bcrypt).
  * 2. Un catalogue complet de plats congolais (plats, accompagnements, viandes).
- * 3. Deux clients types (formule 25 000 FC et formule 35 000 FC) avec abonnements actifs et codes d'activation.
- * 4. Une offre du jour prête à l'emploi avec exactement 6 options (2 par catégorie).
+ * 3. Quatre clients de démonstration couvrant les cas à tester : abonnement en cours (formule 25 000
+ *    et 35 000 FC), abonnement expiré et abonnement pas encore commencé. Tous les abonnements commencent
+ *    un lundi et finissent un vendredi.
+ * 4. Les menus des prochains jours ouvrés (2 plats, 2 accompagnements, 2 viandes).
  */
 
 import {
@@ -15,13 +17,15 @@ import {
   CategorieItem,
   Formule,
   StatutAbonnement,
-  TypeAccessCode,
+  AccessCodeType,
   StatutOffre,
 } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
+import { addDays, computeSubscriptionEnd, nextMonday, isWeekday, dayOfWeek } from '@meal-app/shared';
+import { buildLoginKey } from '../src/utils/loginKey';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -30,187 +34,199 @@ dayjs.tz.setDefault('Africa/Kinshasa');
 const prisma = new PrismaClient();
 const BCRYPT_ROUNDS = 10;
 
+/** Date (UTC minuit) attendue par les colonnes @db.Date */
+const toDbDate = (iso: string): Date => new Date(`${iso}T00:00:00.000Z`);
+
+interface DemoClient {
+  nom: string;
+  prenom: string;
+  telephone: string | null;
+  formule: Formule;
+  debut: string;
+  semaines: number;
+  /** Code d'activation ; null si le compte est déjà activé */
+  code: string | null;
+}
+
 async function main() {
   console.log('🌱 Démarrage du seed YourFood (fuseau : Africa/Kinshasa)...');
 
+  const today = dayjs().tz('Africa/Kinshasa').format('YYYY-MM-DD');
+  const thisMonday = addDays(today, -((dayOfWeek(today) + 6) % 7));
+
   // ─── 1. Compte Administrateur Initial ───────────────────────────
   const adminPasswordHash = await bcrypt.hash('Admin@2026!', BCRYPT_ROUNDS);
-
   const admin = await prisma.user.upsert({
-    where: { telephone: '+243810000001' },
-    update: {
-      nom: 'BOKETSU',
-      prenom: 'Sarah',
-      role: Role.admin,
-      motDePasseHash: adminPasswordHash,
-    },
+    where: { loginKey: buildLoginKey('Sarah', 'BOKETSU') },
+    update: { role: Role.admin, motDePasseHash: adminPasswordHash },
     create: {
       nom: 'BOKETSU',
       prenom: 'Sarah',
       telephone: '+243810000001',
+      loginKey: buildLoginKey('Sarah', 'BOKETSU'),
       role: Role.admin,
       motDePasseHash: adminPasswordHash,
     },
   });
-  console.log(`👤 Administrateur configuré : ${admin.nom} ${admin.prenom} (${admin.telephone})`);
+  console.log(`👤 Administrateur : ${admin.prenom} ${admin.nom} (identifiant : « Sarah BOKETSU »)`);
 
   // ─── 2. Catalogue de Plats (Gastronomie congolaise / locale) ───
   const catalogItems = [
-    // Plats principaux
     { nom: 'Poulet à la Moambé', categorie: CategorieItem.plat },
     { nom: 'Maboke de Capitaine en papillote', categorie: CategorieItem.plat },
     { nom: 'Poisson Braisé aux épices douces', categorie: CategorieItem.plat },
     { nom: 'Bœuf sauté aux légumes locaux', categorie: CategorieItem.plat },
-    // Accompagnements
     { nom: 'Fufu de maïs et manioc', categorie: CategorieItem.accompagnement },
     { nom: 'Chikwangue artisanale', categorie: CategorieItem.accompagnement },
     { nom: 'Riz blanc parfumé', categorie: CategorieItem.accompagnement },
     { nom: 'Bananes plantains frites (Makemba)', categorie: CategorieItem.accompagnement },
     { nom: 'Pommes sautées croustillantes', categorie: CategorieItem.accompagnement },
-    // Viandes
     { nom: 'Kamundele (Brochettes de chèvre braisée)', categorie: CategorieItem.viande },
     { nom: 'Poulet Mayo braisé à la kinois', categorie: CategorieItem.viande },
     { nom: 'Côtelettes de porc dorées', categorie: CategorieItem.viande },
     { nom: 'Viande de bœuf fumée à la sauce tomate', categorie: CategorieItem.viande },
   ];
 
-  const createdItems = new Map<string, number>();
-
+  const itemIds = new Map<string, number>();
   for (const item of catalogItems) {
-    const existing = await prisma.catalogItem.findFirst({
-      where: { nom: item.nom },
-    });
-
-    if (existing) {
-      createdItems.set(item.nom, existing.id);
-    } else {
-      const created = await prisma.catalogItem.create({
-        data: {
-          nom: item.nom,
-          categorie: item.categorie,
-          actif: true,
-        },
-      });
-      createdItems.set(item.nom, created.id);
-    }
+    const existing = await prisma.catalogItem.findFirst({ where: { nom: item.nom } });
+    const record =
+      existing ??
+      (await prisma.catalogItem.create({
+        data: { nom: item.nom, categorie: item.categorie, actif: true },
+      }));
+    itemIds.set(item.nom, record.id);
   }
-  console.log(`🍽️  Catalogue initialisé avec ${createdItems.size} plats, accompagnements et viandes.`);
+  console.log(`🍽️  Catalogue initialisé avec ${itemIds.size} plats, accompagnements et viandes.`);
 
   // ─── 3. Clients de Démonstration ────────────────────────────────
-  const todayStr = dayjs().tz('Africa/Kinshasa').format('YYYY-MM-DD');
-  const todayDate = dayjs(todayStr).toDate();
-  const endDate = dayjs(todayStr).add(30, 'day').toDate();
-
-  // Client 1 : Formule 25 000 FC (viande lundi et vendredi uniquement)
-  const client1 = await prisma.user.upsert({
-    where: { telephone: '+243812345678' },
-    update: { nom: 'KABAMBA', prenom: 'Patrick', role: Role.client },
-    create: {
+  const demoClients: DemoClient[] = [
+    {
       nom: 'KABAMBA',
       prenom: 'Patrick',
       telephone: '+243812345678',
-      role: Role.client,
-    },
-  });
-
-  const sub1 = await prisma.subscription.findFirst({
-    where: { userId: client1.id, statut: StatutAbonnement.actif },
-  }) ?? await prisma.subscription.create({
-    data: {
-      userId: client1.id,
       formule: Formule.F_25000,
-      dateDebut: todayDate,
-      dateFin: endDate,
-      statut: StatutAbonnement.actif,
-      bonus: 'Pack découverte',
-    },
-  });
-
-  await prisma.accessCode.upsert({
-    where: { code: 'KP7X8A9B' },
-    update: { subscriptionId: sub1.id, utilise: false },
-    create: {
+      debut: thisMonday,
+      semaines: 4,
       code: 'KP7X8A9B',
-      subscriptionId: sub1.id,
-      type: TypeAccessCode.activation,
-      utilise: false,
     },
-  });
-  console.log(`👤 Client 1 (25 000 FC) : ${client1.nom} ${client1.prenom} | Code : KP7X8A9B`);
-
-  // Client 2 : Formule 35 000 FC (viande tous les jours ouvrés)
-  const client2 = await prisma.user.upsert({
-    where: { telephone: '+243823456789' },
-    update: { nom: 'MUTOMBO', prenom: 'Jean', role: Role.client },
-    create: {
+    {
       nom: 'MUTOMBO',
       prenom: 'Jean',
       telephone: '+243823456789',
-      role: Role.client,
-    },
-  });
-
-  const sub2 = await prisma.subscription.findFirst({
-    where: { userId: client2.id, statut: StatutAbonnement.actif },
-  }) ?? await prisma.subscription.create({
-    data: {
-      userId: client2.id,
       formule: Formule.F_35000,
-      dateDebut: todayDate,
-      dateFin: endDate,
-      statut: StatutAbonnement.actif,
-    },
-  });
-
-  await prisma.accessCode.upsert({
-    where: { code: 'MJ4D5E6F' },
-    update: { subscriptionId: sub2.id, utilise: false },
-    create: {
+      debut: thisMonday,
+      semaines: 4,
       code: 'MJ4D5E6F',
-      subscriptionId: sub2.id,
-      type: TypeAccessCode.activation,
-      utilise: false,
     },
-  });
-  console.log(`👤 Client 2 (35 000 FC) : ${client2.nom} ${client2.prenom} | Code : MJ4D5E6F`);
+    {
+      // Abonnement terminé la semaine dernière : pour tester l'accès grisé (SPEC 5.11)
+      nom: 'KALALA',
+      prenom: 'Freddy',
+      telephone: null,
+      formule: Formule.F_35000,
+      debut: addDays(thisMonday, -14),
+      semaines: 2,
+      code: null,
+    },
+    {
+      // Abonnement qui commence lundi prochain : pour tester « pas encore actif »
+      nom: 'MWAMBA',
+      prenom: 'Grâce',
+      telephone: '+243841039965',
+      formule: Formule.F_25000,
+      debut: nextMonday(today),
+      semaines: 1,
+      code: 'MG5H6J7K',
+    },
+  ];
 
-  // ─── 4. Offre du Jour Conforme (Exactement 6 options : 2x plat, 2x acc, 2x viande) ───
-  const selectedItems = [
-    createdItems.get('Poulet à la Moambé')!,
-    createdItems.get('Poisson Braisé aux épices douces')!,
-    createdItems.get('Fufu de maïs et manioc')!,
-    createdItems.get('Bananes plantains frites (Makemba)')!,
-    createdItems.get('Kamundele (Brochettes de chèvre braisée)')!,
-    createdItems.get('Poulet Mayo braisé à la kinois')!,
-  ].filter(Boolean);
+  const clientPasswordHash = await bcrypt.hash('Client@2026!', BCRYPT_ROUNDS);
 
-  const existingOffer = await prisma.dailyOffer.findUnique({
-    where: { date: todayDate },
-    include: { options: true },
-  });
-
-  if (!existingOffer && selectedItems.length === 6) {
-    await prisma.dailyOffer.create({
-      data: {
-        date: todayDate,
-        heureLimiteIndicative: '13:00',
-        statut: StatutOffre.ouvert,
-        options: {
-          create: selectedItems.map((catalogItemId) => ({ catalogItemId })),
-        },
+  for (const demo of demoClients) {
+    const loginKey = buildLoginKey(demo.prenom, demo.nom);
+    const user = await prisma.user.upsert({
+      where: { loginKey },
+      update: {},
+      create: {
+        nom: demo.nom,
+        prenom: demo.prenom,
+        telephone: demo.telephone,
+        loginKey,
+        role: Role.client,
+        // Un client déjà activé (sans code) reçoit un mot de passe de démonstration
+        motDePasseHash: demo.code ? null : clientPasswordHash,
       },
     });
-    console.log(`📅 Offre du jour créée pour le ${todayStr} (6 options : 2 plats, 2 acc, 2 viandes).`);
-  } else {
-    console.log(`📅 Offre du jour pour le ${todayStr} déjà existante.`);
+
+    const dateFin = computeSubscriptionEnd(demo.debut, demo.semaines);
+    const existingSub = await prisma.subscription.findFirst({ where: { userId: user.id } });
+    const subscription =
+      existingSub ??
+      (await prisma.subscription.create({
+        data: {
+          userId: user.id,
+          formule: demo.formule,
+          dateDebut: toDbDate(demo.debut),
+          dateFin: toDbDate(dateFin),
+          statut: dateFin < today ? StatutAbonnement.expire : StatutAbonnement.actif,
+        },
+      }));
+
+    if (demo.code) {
+      await prisma.accessCode.upsert({
+        where: { code: demo.code },
+        update: { subscriptionId: subscription.id, utilise: false },
+        create: {
+          code: demo.code,
+          subscriptionId: subscription.id,
+          type: AccessCodeType.activation,
+          utilise: false,
+        },
+      });
+    }
+
+    const access = demo.code ? `code ${demo.code}` : 'mot de passe Client@2026!';
+    console.log(
+      `👤 ${demo.prenom} ${demo.nom} : ${demo.debut} → ${dateFin} (${demo.formule === Formule.F_35000 ? '35 000' : '25 000'} FC) | ${access}`
+    );
   }
+
+  // ─── 4. Menus des prochains jours ouvrés ────────────────────────
+  const menuItems = [
+    'Poulet à la Moambé',
+    'Poisson Braisé aux épices douces',
+    'Fufu de maïs et manioc',
+    'Bananes plantains frites (Makemba)',
+    'Kamundele (Brochettes de chèvre braisée)',
+    'Poulet Mayo braisé à la kinois',
+  ].map((nom) => itemIds.get(nom) as number);
+
+  const menuDays: string[] = [];
+  for (let day = today; menuDays.length < 3; day = addDays(day, 1)) {
+    if (isWeekday(day)) menuDays.push(day);
+  }
+
+  for (const day of menuDays) {
+    const existing = await prisma.dailyOffer.findUnique({ where: { date: toDbDate(day) } });
+    if (existing) continue;
+    await prisma.dailyOffer.create({
+      data: {
+        date: toDbDate(day),
+        heureLimiteIndicative: '13:00',
+        statut: StatutOffre.ouvert,
+        options: { create: menuItems.map((catalogItemId) => ({ catalogItemId })) },
+      },
+    });
+  }
+  console.log(`📅 Menus publiés pour : ${menuDays.join(', ')}`);
 
   console.log('✅ Seed terminé avec succès.');
 }
 
 main()
   .catch((e) => {
-    console.error('❌ Erreur lors de l\'exécution du seed :', e);
+    console.error("❌ Erreur lors de l'exécution du seed :", e);
     process.exit(1);
   })
   .finally(async () => {

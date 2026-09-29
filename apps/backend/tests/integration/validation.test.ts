@@ -27,7 +27,7 @@ describe('Integration : Validation HTTP Zod des flux métier (AG_RULES 3.2 & SPE
       const res = await request(app)
         .post('/api/auth/first-login')
         .send({
-          nom: 'KABAMBA',
+          identifiant: 'Patrick KABAMBA',
           code: '12345678', // Ne commence pas par 2 initiales alphabétiques majuscules
           nouveauMotDePasse: 'ValidPass123!',
         });
@@ -37,11 +37,11 @@ describe('Integration : Validation HTTP Zod des flux métier (AG_RULES 3.2 & SPE
       expect(JSON.stringify(res.body.details)).toContain('code');
     });
 
-    it('rejette un mot de passe trop court (< 6 caractères) (400)', async () => {
+    it('rejette un mot de passe trop court (< 8 caractères) (400)', async () => {
       const res = await request(app)
         .post('/api/auth/first-login')
         .send({
-          nom: 'KABAMBA',
+          identifiant: 'Patrick KABAMBA',
           code: 'KP1A2B3C',
           nouveauMotDePasse: '123', // trop court
         });
@@ -61,8 +61,8 @@ describe('Integration : Validation HTTP Zod des flux métier (AG_RULES 3.2 & SPE
           prenom: 'Felix',
           telephone: '0812345678', // Format local sans +243
           formule: '25000',
-          dureeJours: 30,
-          dateDebut: '2026-10-01',
+          duree: { unite: 'semaines', valeur: 2 },
+          dateDebut: '2026-10-05',
         });
 
       expect(res.status).toBe(400);
@@ -78,8 +78,8 @@ describe('Integration : Validation HTTP Zod des flux métier (AG_RULES 3.2 & SPE
           prenom: 'Felix',
           telephone: '+243812345678',
           formule: '50000', // Formule non supportée
-          dureeJours: 30,
-          dateDebut: '2026-10-01',
+          duree: { unite: 'semaines', valeur: 2 },
+          dateDebut: '2026-10-05',
         });
 
       expect(res.status).toBe(400);
@@ -103,14 +103,14 @@ describe('Integration : Validation HTTP Zod des flux métier (AG_RULES 3.2 & SPE
   });
 
   describe('Validation Offres du Jour (SPEC 5.5)', () => {
-    it('rejette une offre ne contenant pas exactement 6 items (400)', async () => {
+    it('rejette un menu de moins de 3 plats, sans un par catégorie possible (400)', async () => {
       const res = await request(app)
         .post('/api/admin/offers/single')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           date: '2026-10-05',
           heureLimiteIndicative: '13:00',
-          catalogItemIds: [1, 2, 3], // Seulement 3 au lieu de 6
+          catalogItemIds: [1, 2], // Il faut au moins un plat, un accompagnement et une viande
         });
 
       expect(res.status).toBe(400);

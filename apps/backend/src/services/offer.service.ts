@@ -1,193 +1,375 @@
 /**
  * Service Métier : Publication et consultation des offres du jour.
  * Conforme à SPEC.md (5.5, 5.6) et AG_RULES.md.
+ *
+ * Un menu compte au moins un plat, un accompagnement et une viande, sans maximum imposé par catégorie.
  */
 
+import { CatalogItem, CategorieItem, Prisma, StatutCommande, StatutOffre } from '@prisma/client';
 import {
   PublishSingleOfferDto,
   PublishMultiDaysOfferDto,
+  UpdateOfferDto,
   ClientDailyMenuView,
   CatalogItemWithOptionId,
+  AdminOfferView,
+  WeekDayView,
   ItemCategory,
   DailyOfferStatus,
-  SubscriptionPlan,
+  LOCK_TIME,
   OrderStatus,
+  addDays,
+  isWeekday,
+  previousWorkingDay,
 } from '@meal-app/shared';
-import { CategorieItem, StatutOffre } from '@prisma/client';
 import { prisma } from '../utils/prisma';
-import { getWorkingDays, getOfferTimeStatus, isMeatAllowed, getTodayDateString } from '../utils/time';
-import { BadRequestError, NotFoundError } from '../utils/errors';
-import dayjs from 'dayjs';
+import { ClientSubscriptionContext } from './subscription.service';
+import { orderService } from './order.service';
+import {
+  fromDbDate,
+  getOfferTimeStatus,
+  getTodayDateString,
+  getWorkingDays,
+  isLockTimeReached,
+  isMeatAllowed,
+  toDbDate,
+  nowKinshasa,
+} from '../utils/time';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../utils/errors';
+
+type OfferWithOptions = Prisma.DailyOfferGetPayload<{
+  include: { options: { include: { catalogItem: true } } };
+}>;
+
+const EMPTY_OPTIONS: ClientDailyMenuView['optionsParCategorie'] = {
+  plats: [],
+  accompagnements: [],
+  viandes: [],
+};
 
 export class OfferService {
   /**
-   * Publication d'un menu pour un jour unique (SPEC 5.5).
-   * Exactement 6 items du catalogue requis : 2 plats, 2 accompagnements, 2 viandes.
+   * Vérifie que les plats existent, sont proposés (actifs, non supprimés) et couvrent
+   * les trois catégories.
    */
-  async publishSingle(dto: PublishSingleOfferDto): Promise<{ id: number; date: string }> {
-    await this.validateCatalogItems(dto.catalogItemIds);
-
-    const existing = await prisma.dailyOffer.findUnique({
-      where: { date: dayjs(dto.date).toDate() },
+  private async validateCatalogItems(ids: number[]): Promise<CatalogItem[]> {
+    const items = await prisma.catalogItem.findMany({
+      where: { id: { in: ids }, actif: true, supprime: false },
     });
 
-    if (existing) {
-      throw new BadRequestError(`Une offre existe déjà pour le ${dto.date}`);
+    if (items.length !== ids.length) {
+      throw new BadRequestError(
+        'Un ou plusieurs plats sont introuvables ou désactivés. Vérifie ta carte.'
+      );
     }
 
-    const offer = await prisma.dailyOffer.create({
-      data: {
-        date: dayjs(dto.date).toDate(),
-        heureLimiteIndicative: dto.heureLimiteIndicative ?? '13:00',
-        statut: StatutOffre.ouvert,
-        options: {
-          create: dto.catalogItemIds.map((catalogItemId) => ({
-            catalogItemId,
-          })),
-        },
-      },
-    });
+    for (const categorie of [CategorieItem.plat, CategorieItem.accompagnement, CategorieItem.viande]) {
+      if (!items.some((item) => item.categorie === categorie)) {
+        throw new BadRequestError(
+          'Un menu doit contenir au moins un plat, un accompagnement et une viande.'
+        );
+      }
+    }
+    return items;
+  }
 
+  private assertPublishable(dateIso: string): void {
+    if (dateIso < getTodayDateString() || isLockTimeReached(dateIso)) {
+      throw new BadRequestError('On ne peut plus publier de menu pour ce jour : il est trop tard.');
+    }
+  }
+
+  private async createOffer(
+    dateIso: string,
+    heureLimiteIndicative: string,
+    catalogItemIds: number[]
+  ): Promise<{ id: number }> {
+    return prisma.dailyOffer.create({
+      data: {
+        date: toDbDate(dateIso),
+        heureLimiteIndicative,
+        statut: StatutOffre.ouvert,
+        options: { create: catalogItemIds.map((catalogItemId) => ({ catalogItemId })) },
+      },
+      select: { id: true },
+    });
+  }
+
+  /** Publication d'un menu pour un jour unique (SPEC 5.5) */
+  async publishSingle(dto: PublishSingleOfferDto): Promise<{ id: number; date: string }> {
+    this.assertPublishable(dto.date);
+    await this.validateCatalogItems(dto.catalogItemIds);
+
+    const existing = await prisma.dailyOffer.findUnique({ where: { date: toDbDate(dto.date) } });
+    if (existing) {
+      throw new ConflictError(`Un menu est déjà publié pour le ${dto.date} : modifie-le plutôt.`);
+    }
+
+    const offer = await this.createOffer(
+      dto.date,
+      dto.heureLimiteIndicative ?? '13:00',
+      dto.catalogItemIds
+    );
     return { id: offer.id, date: dto.date };
   }
 
   /**
    * Publication multi-jours (SPEC 5.5) : duplique le même menu sur N jours ouvrés.
+   * Chaque jour reste ensuite modifiable individuellement. Les jours qui ont déjà un menu sont ignorés.
    */
-  async publishMultiDays(dto: PublishMultiDaysOfferDto): Promise<{ dates: string[] }> {
+  async publishMultiDays(
+    dto: PublishMultiDaysOfferDto
+  ): Promise<{ dates: string[]; ignores: string[] }> {
+    this.assertPublishable(dto.dateDebut);
     await this.validateCatalogItems(dto.catalogItemIds);
 
-    const workingDays = getWorkingDays(dto.dateDebut, dto.nombreJours);
-    const createdDates: string[] = [];
+    const created: string[] = [];
+    const ignored: string[] = [];
 
-    for (const dateStr of workingDays) {
-      const dateObj = dayjs(dateStr).toDate();
-      const existing = await prisma.dailyOffer.findUnique({ where: { date: dateObj } });
-
-      if (!existing) {
-        await prisma.dailyOffer.create({
-          data: {
-            date: dateObj,
-            heureLimiteIndicative: dto.heureLimiteIndicative ?? '13:00',
-            statut: StatutOffre.ouvert,
-            options: {
-              create: dto.catalogItemIds.map((catalogItemId) => ({
-                catalogItemId,
-              })),
-            },
-          },
-        });
-        createdDates.push(dateStr);
+    for (const dateIso of getWorkingDays(dto.dateDebut, dto.nombreJours)) {
+      const existing = await prisma.dailyOffer.findUnique({ where: { date: toDbDate(dateIso) } });
+      if (existing) {
+        ignored.push(dateIso);
+        continue;
       }
+      await this.createOffer(dateIso, dto.heureLimiteIndicative ?? '13:00', dto.catalogItemIds);
+      created.push(dateIso);
     }
 
-    return { dates: createdDates };
+    return { dates: created, ignores: ignored };
   }
 
   /**
-   * Menu du jour vu par le client (SPEC 5.6 & 7).
+   * Modification d'un menu à venir (heure limite et/ou plats).
+   * Un plat déjà choisi par un client ne peut pas être retiré du menu.
    */
-  async getClientDailyMenu(
-    subscriptionId: number,
-    formule: SubscriptionPlan | string
-  ): Promise<ClientDailyMenuView> {
-    const todayStr = getTodayDateString();
-    const todayDate = dayjs(todayStr).toDate();
-
+  async updateOffer(dateIso: string, dto: UpdateOfferDto): Promise<AdminOfferView> {
     const offer = await prisma.dailyOffer.findUnique({
-      where: { date: todayDate },
-      include: {
-        options: {
-          include: { catalogItem: true },
-        },
-      },
+      where: { date: toDbDate(dateIso) },
+      include: { options: true },
     });
-
     if (!offer) {
-      throw new NotFoundError('Aucune offre publiée pour aujourd\'hui');
+      throw new NotFoundError('Aucun menu publié pour ce jour');
+    }
+    if (offer.statut === StatutOffre.verrouille || isLockTimeReached(dateIso)) {
+      throw new ForbiddenError('Ce menu est verrouillé : il ne peut plus être modifié.');
     }
 
-    // Grouper les options par catégorie
-    const plats: CatalogItemWithOptionId[] = [];
-    const accompagnements: CatalogItemWithOptionId[] = [];
-    const viandes: CatalogItemWithOptionId[] = [];
+    if (dto.catalogItemIds) {
+      await this.validateCatalogItems(dto.catalogItemIds);
+      const wanted = new Set(dto.catalogItemIds);
+      const toRemove = offer.options.filter((o) => !wanted.has(o.catalogItemId));
+      const existingItemIds = new Set(offer.options.map((o) => o.catalogItemId));
+      const toAdd = dto.catalogItemIds.filter((id) => !existingItemIds.has(id));
 
-    for (const opt of offer.options) {
+      if (toRemove.length > 0) {
+        const removedIds = toRemove.map((o) => o.id);
+        const chosen = await prisma.order.count({
+          where: {
+            dailyOfferId: offer.id,
+            statut: { not: StatutCommande.annulee },
+            OR: [
+              { platId: { in: removedIds } },
+              { accompagnementId: { in: removedIds } },
+              { viandeId: { in: removedIds } },
+            ],
+          },
+        });
+        if (chosen > 0) {
+          throw new ConflictError(
+            'Des clients ont déjà choisi un des plats que tu retires. Garde-le sur le menu.'
+          );
+        }
+      }
+
+      await prisma.$transaction([
+        prisma.offerOption.deleteMany({ where: { id: { in: toRemove.map((o) => o.id) } } }),
+        prisma.offerOption.createMany({
+          data: toAdd.map((catalogItemId) => ({ dailyOfferId: offer.id, catalogItemId })),
+        }),
+      ]);
+    }
+
+    if (dto.heureLimiteIndicative) {
+      await prisma.dailyOffer.update({
+        where: { id: offer.id },
+        data: { heureLimiteIndicative: dto.heureLimiteIndicative },
+      });
+    }
+
+    const [view] = await this.buildAdminViews([dateIso]);
+    if (!view) {
+      throw new NotFoundError('Aucun menu publié pour ce jour');
+    }
+    return view;
+  }
+
+  /**
+   * Jours ouvrés d'une plage, publiés ou non, avec les livraisons attendues.
+   * Alimente le bandeau de la semaine (Accueil) et la liste « Menus à venir ».
+   */
+  async listWeek(from: string, to: string): Promise<WeekDayView[]> {
+    const dates: string[] = [];
+    for (let current = from; current <= to && dates.length < 62; current = addDays(current, 1)) {
+      if (isWeekday(current)) {
+        dates.push(current);
+      }
+    }
+
+    const views = await this.buildAdminViews(dates);
+    const byDate = new Map(views.map((view) => [view.date, view]));
+    const covering = await this.countCoveringSubscriptions(dates);
+
+    return dates.map((date) => ({
+      date,
+      publie: byDate.has(date),
+      offre: byDate.get(date) ?? null,
+      livraisonsPrevues: byDate.get(date)?.livraisonsPrevues ?? covering.get(date) ?? 0,
+    }));
+  }
+
+  /** Abonnements couvrant chaque date (une requête pour toute la plage) */
+  private async countCoveringSubscriptions(dates: string[]): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+    if (!first || !last) {
+      return counts;
+    }
+
+    const subscriptions = await prisma.subscription.findMany({
+      where: { dateDebut: { lte: toDbDate(last) }, dateFin: { gte: toDbDate(first) } },
+      select: { dateDebut: true, dateFin: true },
+    });
+
+    for (const date of dates) {
+      counts.set(
+        date,
+        subscriptions.filter((s) => fromDbDate(s.dateDebut) <= date && fromDbDate(s.dateFin) >= date)
+          .length
+      );
+    }
+    return counts;
+  }
+
+  private async buildAdminViews(dates: string[]): Promise<AdminOfferView[]> {
+    if (dates.length === 0) {
+      return [];
+    }
+
+    const offers = await prisma.dailyOffer.findMany({
+      where: { date: { in: dates.map(toDbDate) } },
+      include: {
+        options: { include: { catalogItem: true } },
+        orders: { select: { statut: true } },
+      },
+      orderBy: { date: 'asc' },
+    });
+    const covering = await this.countCoveringSubscriptions(dates);
+
+    return offers.map((offer) => {
+      const date = fromDbDate(offer.date);
+      const cancelled = offer.orders.filter((o) => o.statut === StatutCommande.annulee).length;
+      const grouped = this.groupOptions(offer.options);
+
+      return {
+        id: offer.id,
+        date,
+        statut: offer.statut as unknown as DailyOfferStatus,
+        heureLimiteIndicative: offer.heureLimiteIndicative,
+        plats: grouped.plats,
+        accompagnements: grouped.accompagnements,
+        viandes: grouped.viandes,
+        livraisonsPrevues: (covering.get(date) ?? 0) - cancelled,
+        commandesRecues: offer.orders.length - cancelled,
+      };
+    });
+  }
+
+  private groupOptions(
+    options: OfferWithOptions['options']
+  ): ClientDailyMenuView['optionsParCategorie'] {
+    const grouped: ClientDailyMenuView['optionsParCategorie'] = {
+      plats: [],
+      accompagnements: [],
+      viandes: [],
+    };
+
+    for (const opt of [...options].sort((a, b) => a.id - b.id)) {
       const mapped: CatalogItemWithOptionId = {
         optionId: opt.id,
         catalogItemId: opt.catalogItem.id,
         nom: opt.catalogItem.nom,
         categorie: opt.catalogItem.categorie as unknown as ItemCategory,
       };
-
       switch (opt.catalogItem.categorie) {
         case CategorieItem.plat:
-          plats.push(mapped);
+          grouped.plats.push(mapped);
           break;
         case CategorieItem.accompagnement:
-          accompagnements.push(mapped);
+          grouped.accompagnements.push(mapped);
           break;
         case CategorieItem.viande:
-          viandes.push(mapped);
+          grouped.viandes.push(mapped);
           break;
       }
     }
+    return grouped;
+  }
 
-    const estViandeAutorisee = isMeatAllowed(formule, todayStr);
-    const statutMenu = getOfferTimeStatus(offer.heureLimiteIndicative);
+  /**
+   * Menu du jour vu par le client (SPEC 5.6 & 7).
+   * Toujours une réponse exploitable : sans menu publié, `statutMenu` vaut « aucun_menu ».
+   * Un abonnement expiré reçoit la même vue, à afficher grisée (SPEC 5.11).
+   */
+  async getClientDailyMenu(context: ClientSubscriptionContext): Promise<ClientDailyMenuView> {
+    const todayStr = getTodayDateString();
+    await orderService.ensureLocked(todayStr);
 
-    // Commande existante du client pour aujourd'hui
-    const existingOrder = await prisma.order.findFirst({
-      where: {
-        dailyOfferId: offer.id,
-        subscriptionId,
-      },
-      include: {
-        plat: { include: { catalogItem: true } },
-        accompagnement: { include: { catalogItem: true } },
-        viande: { include: { catalogItem: true } },
-      },
+    const base = {
+      date: todayStr,
+      formule: context.view.formule,
+      etatAbonnement: context.view.etat,
+      dateFinAbonnement: context.view.dateFin,
+      estViandeAutoriseeAujourdhui: isMeatAllowed(context.view.formule, todayStr),
+      heureVerrouillage: LOCK_TIME,
+      serverNow: nowKinshasa().toISOString(),
+    };
+
+    const offer = await prisma.dailyOffer.findUnique({
+      where: { date: toDbDate(todayStr) },
+      include: { options: { include: { catalogItem: true } } },
     });
 
-    // Avis du repas de la veille à remplir (SPEC 5.9)
-    const yesterday = dayjs(todayStr).subtract(1, 'day').toDate();
-    const yesterdayOffer = await prisma.dailyOffer.findUnique({
-      where: { date: yesterday },
-    });
+    const avisRepasPrecedentACompleter = await this.findMealToReview(context.subscription.userId, todayStr);
 
-    let avisRepasPrecedent = null;
-    if (yesterdayOffer) {
-      const yesterdayOrder = await prisma.order.findFirst({
-        where: {
-          dailyOfferId: yesterdayOffer.id,
-          subscriptionId,
-          statut: { not: 'annulee' },
-        },
-        include: { review: true },
-      });
-
-      if (yesterdayOrder && (!yesterdayOrder.review || !yesterdayOrder.review.rempli)) {
-        avisRepasPrecedent = {
-          orderId: yesterdayOrder.id,
-          date: dayjs(yesterday).format('YYYY-MM-DD'),
-        };
-      }
+    if (!offer) {
+      return {
+        ...base,
+        dailyOffer: null,
+        optionsParCategorie: EMPTY_OPTIONS,
+        statutMenu: 'aucun_menu',
+        commandeExistante: null,
+        avisRepasPrecedentACompleter,
+      };
     }
 
+    const existingOrder = await prisma.order.findUnique({
+      where: {
+        dailyOfferId_subscriptionId: { dailyOfferId: offer.id, subscriptionId: context.subscription.id },
+      },
+    });
+
     return {
+      ...base,
       dailyOffer: {
         id: offer.id,
         date: todayStr,
         heureLimiteIndicative: offer.heureLimiteIndicative,
         statut: offer.statut as unknown as DailyOfferStatus,
       },
-      optionsParCategorie: {
-        plats,
-        accompagnements,
-        viandes,
-      },
-      estViandeAutoriseeAujourdhui: estViandeAutorisee,
-      statutMenu,
+      optionsParCategorie: this.groupOptions(offer.options),
+      statutMenu: offer.statut === StatutOffre.verrouille ? 'verrouille' : getOfferTimeStatus(offer.heureLimiteIndicative),
       commandeExistante: existingOrder
         ? {
             id: existingOrder.id,
@@ -203,34 +385,32 @@ export class OfferService {
             updatedAt: existingOrder.updatedAt.toISOString(),
           }
         : null,
-      avisRepasPrecedentACompleter: avisRepasPrecedent,
+      avisRepasPrecedentACompleter,
     };
   }
 
   /**
-   * Valide que les 6 IDs du catalogue respectent la contrainte : 2 par catégorie.
+   * Repas du dernier jour ouvré (le lundi : celui du vendredi), proposé avec le menu suivant
+   * pour un avis facultatif (SPEC 5.9). Les commandes annulées n'ont rien à noter.
    */
-  private async validateCatalogItems(ids: number[]): Promise<void> {
-    const items = await prisma.catalogItem.findMany({
-      where: { id: { in: ids }, actif: true },
+  private async findMealToReview(
+    userId: number,
+    todayStr: string
+  ): Promise<{ orderId: number; date: string } | null> {
+    const previousDay = previousWorkingDay(todayStr);
+    const order = await prisma.order.findFirst({
+      where: {
+        subscription: { userId },
+        dailyOffer: { date: toDbDate(previousDay) },
+        statut: { not: StatutCommande.annulee },
+      },
+      include: { review: true },
     });
 
-    if (items.length !== 6) {
-      throw new BadRequestError(
-        `${items.length} items trouvés sur 6 attendus. Vérifiez que tous les items existent et sont actifs.`
-      );
+    if (!order || order.review?.rempli) {
+      return null;
     }
-
-    const counts: Record<string, number> = {};
-    for (const item of items) {
-      counts[item.categorie] = (counts[item.categorie] ?? 0) + 1;
-    }
-
-    if (counts['plat'] !== 2 || counts['accompagnement'] !== 2 || counts['viande'] !== 2) {
-      throw new BadRequestError(
-        'L\'offre doit contenir exactement 2 plats, 2 accompagnements et 2 viandes.'
-      );
-    }
+    return { orderId: order.id, date: previousDay };
   }
 }
 

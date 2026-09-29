@@ -80,7 +80,7 @@ describe('Integration : Sécurité & Contrôle d\'accès (AG_RULES 3.3 & SPEC 7)
     it('renvoie 400 Bad Request si le body ne respecte pas le schéma d\'authentification', async () => {
       const res = await request(app)
         .post('/api/auth/login')
-        .send({ nom: '' }); // motDePasse manquant et nom vide
+        .send({ identifiant: '' }); // motDePasse manquant et identifiant vide
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('Données fournies invalides');
@@ -92,7 +92,7 @@ describe('Integration : Sécurité & Contrôle d\'accès (AG_RULES 3.3 & SPEC 7)
       const res = await request(app)
         .post('/api/auth/first-login')
         .send({
-          nom: 'KABAMBA',
+          identifiant: 'Patrick KABAMBA',
           code: 'COURT', // 5 caractères au lieu de 8
           nouveauMotDePasse: 'Secret123!',
         });

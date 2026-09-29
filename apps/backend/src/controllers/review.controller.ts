@@ -11,13 +11,11 @@ export class ReviewController {
   /** POST /api/reviews - Soumettre un avis sur un repas */
   async submitReview(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const subscriptionId = req.user?.subscriptionId;
-      if (!subscriptionId) {
-        throw new UnauthorizedError('Abonnement requis pour donner un avis');
+      if (!req.user) {
+        throw new UnauthorizedError('Authentification requise');
       }
-
-      await reviewService.submitReview(subscriptionId, req.body);
-      res.status(200).json({ message: 'Avis enregistré avec succès' });
+      await reviewService.submitReview(req.user.userId, req.body);
+      res.status(200).json({ message: 'Avis enregistré, merci !' });
     } catch (err) {
       next(err);
     }
@@ -26,8 +24,7 @@ export class ReviewController {
   /** GET /api/admin/reviews - Liste chronologique des avis pour l'admin */
   async getAllReviews(_req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const reviews = await reviewService.getAllReviews();
-      res.status(200).json(reviews);
+      res.status(200).json(await reviewService.getAllReviews());
     } catch (err) {
       next(err);
     }

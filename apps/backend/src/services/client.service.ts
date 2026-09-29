@@ -3,109 +3,107 @@
  * Conforme à SPEC.md (5.1, 5.2, 5.3, 5.11 & 6) et AG_RULES.md.
  */
 
+import { Prisma, AccessCodeType as PrismaAccessCodeType } from '@prisma/client';
 import {
   CreateClientDto,
   CreateClientResponse,
-  ResetPasswordResponse,
   RenewSubscriptionDto,
   ClientDetailView,
-  SubscriptionPlan,
-  SubscriptionStatus,
-  Role,
+  ClientListFilter,
+  ClientListRow,
+  ClientListView,
+  AccessDelivery,
+  SubscriptionView,
   OrderStatus,
+  computeSubscriptionEnd,
+  durationToWeeks,
+  getSubscriptionState,
+  nextMonday,
+  pickCurrentPeriod,
 } from '@meal-app/shared';
-import { Formule, StatutAbonnement, AccessCodeType, User, Subscription } from '@prisma/client';
 import { prisma } from '../utils/prisma';
 import { userRepository } from '../repositories/user.repository';
 import { subscriptionRepository } from '../repositories/subscription.repository';
-import { accessCodeRepository } from '../repositories/accessCode.repository';
 import { generateActivationCode } from '../utils/codeGenerator';
-import {
-  calculateSubscriptionEndDate,
-  nowKinshasa,
-  getTodayDateString,
-} from '../utils/time';
-import {
-  buildActivationWhatsAppUrl,
-  buildResetPasswordWhatsAppUrl,
-} from '../utils/whatsapp';
-import { NotFoundError, ConflictError } from '../utils/errors';
-import dayjs from 'dayjs';
+import { buildLoginKey, normalizeName } from '../utils/loginKey';
+import { fromDbDate, getTodayDateString, toDbDate } from '../utils/time';
+import { buildAccessDelivery, buildResetMessage, buildWelcomeMessage } from '../utils/whatsapp';
+import { toPrismaFormule, toSharedFormule, toSubscriptionView, toUser } from '../utils/mappers';
+import { mealLabel } from '../utils/orderFormat';
+import { BadRequestError, ConflictError, NotFoundError } from '../utils/errors';
+
+type Tx = Prisma.TransactionClient;
 
 export class ClientService {
   private getFrontendUrl(): string {
     return process.env.FRONTEND_URL ?? 'http://localhost:5173';
   }
 
-  private mapFormuleToPrisma(plan: SubscriptionPlan): Formule {
-    return plan === SubscriptionPlan.PLAN_35000 ? Formule.F_35000 : Formule.F_25000;
-  }
-
-  private mapFormuleToShared(formule: Formule): SubscriptionPlan {
-    return formule === Formule.F_35000 ? SubscriptionPlan.PLAN_35000 : SubscriptionPlan.PLAN_25000;
+  /** Génère un code d'accès unique (2 initiales + 6 caractères aléatoires) */
+  private async generateUniqueCode(tx: Tx, nom: string, prenom: string): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const code = generateActivationCode(nom, prenom);
+      const existing = await tx.accessCode.findUnique({ where: { code } });
+      if (!existing) {
+        return code;
+      }
+    }
+    throw new Error("Impossible de générer un code d'accès unique");
   }
 
   /**
    * Inscription d'un nouveau client (100% côté admin).
-   * SPEC 5.1 & 5.2.
+   * SPEC 5.1 & 5.2. L'abonnement commence un lundi (le prochain par défaut) et finit un vendredi.
    */
   async createClient(dto: CreateClientDto): Promise<CreateClientResponse> {
-    // Vérifier l'unicité du numéro de téléphone
-    const existingPhone = await userRepository.findByTelephone(dto.telephone);
-    if (existingPhone) {
+    const today = getTodayDateString();
+
+    const loginKey = buildLoginKey(dto.prenom, dto.nom);
+    if (await userRepository.findByLoginKey(loginKey)) {
+      throw new ConflictError(
+        `Un client s'appelle déjà « ${dto.prenom.trim()} ${dto.nom.trim()} ». ` +
+          'Ajoute un détail qui les distingue (par exemple une initiale) dans le nom ou le prénom.'
+      );
+    }
+
+    if (dto.telephone && (await userRepository.findByTelephone(dto.telephone))) {
       throw new ConflictError('Un client existe déjà avec ce numéro de téléphone');
     }
 
-    const dateDebut = dayjs(dto.dateDebut).toDate();
-    const dateFinStr = calculateSubscriptionEndDate(dto.dateDebut, dto.dureeJours);
-    const dateFin = dayjs(dateFinStr).toDate();
+    const dateDebut = dto.dateDebut ?? nextMonday(today);
+    if (dateDebut < today) {
+      throw new BadRequestError('La date de début ne peut pas être dans le passé');
+    }
+    const dateFin = computeSubscriptionEnd(dateDebut, durationToWeeks(dto.duree));
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Création de l'utilisateur
       const user = await tx.user.create({
         data: {
           nom: dto.nom.trim(),
           prenom: dto.prenom.trim(),
-          telephone: dto.telephone.trim(),
+          telephone: dto.telephone ?? null,
+          loginKey,
           role: 'client',
         },
       });
 
-      // 2. Création de l'abonnement
       const subscription = await tx.subscription.create({
         data: {
           userId: user.id,
-          formule: this.mapFormuleToPrisma(dto.formule),
-          dateDebut,
-          dateFin,
+          formule: toPrismaFormule(dto.formule),
+          dateDebut: toDbDate(dateDebut),
+          dateFin: toDbDate(dateFin),
           bonus: dto.bonus?.trim() || null,
-          statut: StatutAbonnement.actif,
+          statut: 'actif',
         },
       });
 
-      // 3. Génération du code d'activation unique à 8 caractères
-      let code = '';
-      let isUnique = false;
-      let attempts = 0;
-
-      while (!isUnique && attempts < 10) {
-        code = generateActivationCode(user.nom, user.prenom);
-        const existing = await tx.accessCode.findUnique({ where: { code } });
-        if (!existing) {
-          isUnique = true;
-        }
-        attempts++;
-      }
-
-      if (!isUnique) {
-        throw new Error('Impossible de générer un code d\'accès unique');
-      }
-
+      const code = await this.generateUniqueCode(tx, user.nom, user.prenom);
       await tx.accessCode.create({
         data: {
           subscriptionId: subscription.id,
           code,
-          type: AccessCodeType.activation,
+          type: PrismaAccessCodeType.activation,
           utilise: false,
         },
       });
@@ -113,44 +111,65 @@ export class ClientService {
       return { user, subscription, code };
     });
 
-    const activationLink = `${this.getFrontendUrl()}/activation?code=${result.code}&nom=${encodeURIComponent(result.user.nom)}`;
-    const whatsappUrl = buildActivationWhatsAppUrl(
-      result.user.telephone,
-      result.user.prenom,
-      result.code,
-      activationLink
-    );
+    const acces = this.buildWelcomeDelivery(result.user, result.code, dateDebut);
 
     return {
-      client: {
-        id: result.user.id,
-        nom: result.user.nom,
-        prenom: result.user.prenom,
-        telephone: result.user.telephone,
-        role: Role.CLIENT,
-        createdAt: result.user.createdAt.toISOString(),
-      },
-      subscription: {
-        id: result.subscription.id,
-        userId: result.subscription.userId,
-        formule: this.mapFormuleToShared(result.subscription.formule),
-        dateDebut: dayjs(result.subscription.dateDebut).format('YYYY-MM-DD'),
-        dateFin: dayjs(result.subscription.dateFin).format('YYYY-MM-DD'),
-        bonus: result.subscription.bonus,
-        statut: SubscriptionStatus.ACTIF,
-        createdAt: result.subscription.createdAt.toISOString(),
-      },
-      accessCode: result.code,
-      activationLink,
-      whatsappUrl,
+      client: toUser(result.user),
+      subscription: toSubscriptionView(result.subscription, today),
+      acces,
     };
+  }
+
+  private buildWelcomeDelivery(
+    user: { prenom: string; telephone: string | null },
+    code: string,
+    dateDebut: string
+  ): AccessDelivery {
+    return buildAccessDelivery({
+      telephone: user.telephone,
+      code,
+      frontendUrl: this.getFrontendUrl(),
+      message: (lien) => buildWelcomeMessage({ prenom: user.prenom, dateDebut, lien, code }),
+    });
+  }
+
+  /**
+   * « Renvoyer le message de bienvenue » (SPEC 6) : ré-affiche le même code tant qu'il n'a pas servi.
+   * Une fois le compte activé, il faut passer par la réinitialisation du mot de passe.
+   */
+  async resendWelcome(userId: number): Promise<AccessDelivery> {
+    const user = await userRepository.findById(userId);
+    if (!user || user.role !== 'client') {
+      throw new NotFoundError('Client introuvable');
+    }
+
+    const pending = await prisma.accessCode.findFirst({
+      where: {
+        utilise: false,
+        type: PrismaAccessCodeType.activation,
+        subscription: { userId },
+      },
+      orderBy: { dateGeneration: 'desc' },
+      include: { subscription: true },
+    });
+
+    if (!pending) {
+      throw new ConflictError(
+        'Ce client a déjà activé son compte. Utilise « Réinitialiser le mot de passe » pour lui donner un nouvel accès.'
+      );
+    }
+
+    const today = getTodayDateString();
+    const current = await subscriptionRepository.findCurrentByUserId(userId, today);
+    const dateDebut = fromDbDate((current ?? pending.subscription).dateDebut);
+    return this.buildWelcomeDelivery(user, pending.code, dateDebut);
   }
 
   /**
    * Réinitialisation de mot de passe oublié initiée par l'admin depuis la fiche client.
-   * SPEC 5.3.
+   * SPEC 5.3 : nouveau code à usage unique, même mécanisme que l'activation.
    */
-  async resetPassword(subscriptionId: number): Promise<ResetPasswordResponse> {
+  async resetPassword(subscriptionId: number): Promise<AccessDelivery> {
     const subscription = await subscriptionRepository.findById(subscriptionId);
     if (!subscription) {
       throw new NotFoundError('Abonnement introuvable');
@@ -160,88 +179,158 @@ export class ClientService {
     if (!user) {
       throw new NotFoundError('Utilisateur introuvable');
     }
+    if (!user.motDePasseHash) {
+      throw new ConflictError(
+        "Ce client n'a pas encore activé son compte : renvoie-lui son message de bienvenue."
+      );
+    }
 
-    const code = generateActivationCode(user.nom, user.prenom);
+    const code = await prisma.$transaction(async (tx) => {
+      // Un seul code de réinitialisation valable à la fois
+      await tx.accessCode.updateMany({
+        where: {
+          utilise: false,
+          type: PrismaAccessCodeType.reinitialisation,
+          subscription: { userId: user.id },
+        },
+        data: { utilise: true, dateUtilisation: new Date() },
+      });
 
-    await accessCodeRepository.create({
-      subscriptionId: subscription.id,
-      code,
-      type: AccessCodeType.reinitialisation,
+      const newCode = await this.generateUniqueCode(tx, user.nom, user.prenom);
+      await tx.accessCode.create({
+        data: {
+          subscriptionId: subscription.id,
+          code: newCode,
+          type: PrismaAccessCodeType.reinitialisation,
+        },
+      });
+      return newCode;
     });
 
-    const resetLink = `${this.getFrontendUrl()}/activation?code=${code}&nom=${encodeURIComponent(user.nom)}`;
-    const whatsappUrl = buildResetPasswordWhatsAppUrl(
-      user.telephone,
-      user.prenom,
+    return buildAccessDelivery({
+      telephone: user.telephone,
       code,
-      resetLink
-    );
-
-    return {
-      code,
-      whatsappUrl,
-    };
+      frontendUrl: this.getFrontendUrl(),
+      message: (lien) => buildResetMessage({ prenom: user.prenom, lien, code }),
+    });
   }
 
   /**
-   * Renouvellement ou prolongation d'abonnement par l'admin.
-   * Conserve l'historique et ne régénère pas de code ni de lien (SPEC 5.11).
+   * Renouvellement ou prolongation d'abonnement par l'admin (SPEC 5.11).
+   * - L'ancienne période est conservée en historique et reste valable jusqu'à sa fin ;
+   * - la nouvelle commence un lundi : par défaut le lundi qui suit la fin de la dernière période
+   *   (ou le prochain lundi si tout est déjà expiré), au choix de l'admin sinon ;
+   * - aucun nouveau code ni lien : le client se reconnecte normalement.
    */
   async renewSubscription(
     subscriptionId: number,
     dto: RenewSubscriptionDto
-  ): Promise<Subscription> {
+  ): Promise<SubscriptionView> {
     const currentSub = await subscriptionRepository.findById(subscriptionId);
     if (!currentSub) {
       throw new NotFoundError('Abonnement à renouveler introuvable');
     }
 
-    const now = nowKinshasa();
-    const currentEnd = dayjs(currentSub.dateFin);
+    const today = getTodayDateString();
+    const history = await subscriptionRepository.findHistoryByUserId(currentSub.userId);
+    const lastEnd = history
+      .map((sub) => fromDbDate(sub.dateFin))
+      .reduce((latest, end) => (end > latest ? end : latest), '0000-00-00');
 
-    // Si l'abonnement actuel n'est pas encore expiré, on démarre le jour suivant sa fin
-    let newStartDate = now.startOf('day');
-    if (currentEnd.isAfter(now)) {
-      newStartDate = currentEnd.add(1, 'day').startOf('day');
+    const dateDebut = dto.dateDebut ?? nextMonday(lastEnd > today ? lastEnd : today);
+    if (dateDebut < today) {
+      throw new BadRequestError('La date de début ne peut pas être dans le passé');
     }
+    if (dateDebut <= lastEnd) {
+      throw new BadRequestError(
+        "La nouvelle période chevaucherait l'abonnement en cours : choisis un lundi après sa fin."
+      );
+    }
+    const dateFin = computeSubscriptionEnd(dateDebut, durationToWeeks(dto.duree));
 
-    const newEndDateStr = calculateSubscriptionEndDate(
-      newStartDate.format('YYYY-MM-DD'),
-      dto.dureeJours
-    );
-    const newEndDate = dayjs(newEndDateStr).toDate();
-
-    const newFormule = dto.formule
-      ? this.mapFormuleToPrisma(dto.formule)
-      : currentSub.formule;
-
-    return prisma.$transaction(async (tx) => {
-      // 1. Marquer l'ancien abonnement comme expiré
-      await tx.subscription.update({
-        where: { id: currentSub.id },
-        data: { statut: StatutAbonnement.expire },
+    const created = await prisma.$transaction(async (tx) => {
+      // Les périodes déjà terminées sont marquées expirées (l'état affiché reste calculé sur les dates)
+      await tx.subscription.updateMany({
+        where: { userId: currentSub.userId, dateFin: { lt: toDbDate(today) }, statut: 'actif' },
+        data: { statut: 'expire' },
       });
 
-      // 2. Créer la nouvelle période
       return tx.subscription.create({
         data: {
           userId: currentSub.userId,
-          formule: newFormule,
-          dateDebut: newStartDate.toDate(),
-          dateFin: newEndDate,
+          formule: dto.formule ? toPrismaFormule(dto.formule) : currentSub.formule,
+          dateDebut: toDbDate(dateDebut),
+          dateFin: toDbDate(dateFin),
           bonus: currentSub.bonus,
-          statut: StatutAbonnement.actif,
+          statut: 'actif',
         },
       });
     });
+
+    return toSubscriptionView(created, today);
   }
 
   /**
-   * Récupère la liste de tous les clients avec leur abonnement actuel.
-   * SPEC 6 (Écran Clients).
+   * Liste des clients avec état coloré, jours restants et compteurs par filtre (SPEC 6).
+   * « Actif » regroupe les abonnements en cours et ceux qui n'ont pas encore commencé.
    */
-  async getAllClients(): Promise<User[]> {
-    return userRepository.findAllClients();
+  async listClients(filters: { q?: string; etat?: ClientListFilter }): Promise<ClientListView> {
+    const today = getTodayDateString();
+    const users = await prisma.user.findMany({
+      where: { role: 'client' },
+      include: { subscriptions: true },
+      orderBy: [{ nom: 'asc' }, { prenom: 'asc' }],
+    });
+
+    const rows: ClientListRow[] = users.map((user) => {
+      const periods = user.subscriptions.map((sub) => ({
+        sub,
+        dateDebut: fromDbDate(sub.dateDebut),
+        dateFin: fromDbDate(sub.dateFin),
+      }));
+      const current = pickCurrentPeriod(periods, today);
+      const state = current ? getSubscriptionState(current, today) : null;
+
+      return {
+        id: user.id,
+        subscriptionId: current?.sub.id ?? null,
+        nom: user.nom,
+        prenom: user.prenom,
+        telephone: user.telephone,
+        formule: current ? toSharedFormule(current.sub.formule) : null,
+        etat: state?.etat ?? null,
+        joursRestants: state?.joursRestants ?? 0,
+        dateFin: current?.dateFin ?? null,
+      };
+    });
+
+    const groupOf = (row: ClientListRow): ClientListFilter | null => {
+      if (row.etat === 'expire') return 'expire';
+      if (row.etat === 'bientot_expire') return 'bientot_expire';
+      if (row.etat === 'actif' || row.etat === 'non_commence') return 'actif';
+      return null;
+    };
+
+    const compteurs = {
+      tous: rows.length,
+      actifs: rows.filter((r) => groupOf(r) === 'actif').length,
+      bientotExpires: rows.filter((r) => groupOf(r) === 'bientot_expire').length,
+      expires: rows.filter((r) => groupOf(r) === 'expire').length,
+    };
+
+    const query = filters.q ? normalizeName(filters.q) : '';
+    const clients = rows.filter((row) => {
+      if (filters.etat && groupOf(row) !== filters.etat) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = normalizeName(`${row.prenom} ${row.nom} ${row.telephone ?? ''}`);
+      return haystack.includes(query);
+    });
+
+    return { clients, compteurs };
   }
 
   /**
@@ -250,21 +339,15 @@ export class ClientService {
    */
   async getClientDetail(userId: number): Promise<ClientDetailView> {
     const user = await userRepository.findById(userId);
-    if (!user) {
+    if (!user || user.role !== 'client') {
       throw new NotFoundError('Client introuvable');
     }
 
+    const today = getTodayDateString();
     const subscriptions = await subscriptionRepository.findHistoryByUserId(userId);
-    const activeSub = subscriptions.find((s) => s.statut === StatutAbonnement.actif);
+    const views = subscriptions.map((sub) => toSubscriptionView(sub, today));
+    const current = pickCurrentPeriod(views, today);
 
-    let joursRestants = 0;
-    if (activeSub) {
-      const today = dayjs(getTodayDateString());
-      const end = dayjs(activeSub.dateFin);
-      joursRestants = Math.max(0, end.diff(today, 'day'));
-    }
-
-    // Récupération des commandes passées
     const orders = await prisma.order.findMany({
       where: { subscription: { userId } },
       include: {
@@ -274,62 +357,37 @@ export class ClientService {
         viande: { include: { catalogItem: true } },
         review: true,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { dailyOffer: { date: 'desc' } },
     });
 
-    const reviews = orders
-      .filter((o) => o.review && o.review.rempli)
+    const avis = orders
+      .filter((o) => o.review?.rempli)
       .map((o) => ({
         orderId: o.id,
-        date: dayjs(o.dailyOffer.date).format('YYYY-MM-DD'),
-        noteEtoile: o.review?.noteEtoile,
-        commentaire: o.review?.commentaire,
+        date: fromDbDate(o.dailyOffer.date),
+        repas: mealLabel(o),
+        noteEtoile: o.review?.noteEtoile ?? null,
+        commentaire: o.review?.commentaire ?? null,
       }));
 
-    const notes = reviews.map((r) => r.noteEtoile).filter((n): n is number => n !== null && n !== undefined);
-    const noteMoyenne = notes.length > 0 ? Number((notes.reduce((a, b) => a + b, 0) / notes.length).toFixed(1)) : null;
+    const notes = avis.map((r) => r.noteEtoile).filter((n): n is number => n !== null);
+    const noteMoyenne =
+      notes.length > 0 ? Number((notes.reduce((a, b) => a + b, 0) / notes.length).toFixed(1)) : null;
 
     return {
-      client: {
-        id: user.id,
-        nom: user.nom,
-        prenom: user.prenom,
-        telephone: user.telephone,
-        role: Role.CLIENT,
-        createdAt: user.createdAt.toISOString(),
-      },
-      abonnementActif: activeSub
-        ? {
-            id: activeSub.id,
-            userId: activeSub.userId,
-            formule: this.mapFormuleToShared(activeSub.formule),
-            dateDebut: dayjs(activeSub.dateDebut).format('YYYY-MM-DD'),
-            dateFin: dayjs(activeSub.dateFin).format('YYYY-MM-DD'),
-            bonus: activeSub.bonus,
-            statut: SubscriptionStatus.ACTIF,
-            createdAt: activeSub.createdAt.toISOString(),
-          }
-        : null,
-      joursRestants,
-      historiqueAbonnements: subscriptions.map((s) => ({
-        id: s.id,
-        userId: s.userId,
-        formule: this.mapFormuleToShared(s.formule),
-        dateDebut: dayjs(s.dateDebut).format('YYYY-MM-DD'),
-        dateFin: dayjs(s.dateFin).format('YYYY-MM-DD'),
-        bonus: s.bonus,
-        statut: s.statut === StatutAbonnement.actif ? SubscriptionStatus.ACTIF : SubscriptionStatus.EXPIRE,
-        createdAt: s.createdAt.toISOString(),
-      })),
+      client: toUser(user),
+      abonnementCourant: current,
+      historiqueAbonnements: views,
       historiqueJours: orders.map((o) => ({
-        date: dayjs(o.dailyOffer.date).format('YYYY-MM-DD'),
-        platNom: o.plat.catalogItem.nom,
-        accompagnementNom: o.accompagnement.catalogItem.nom,
+        orderId: o.id,
+        date: fromDbDate(o.dailyOffer.date),
+        platNom: o.plat?.catalogItem.nom ?? null,
+        accompagnementNom: o.accompagnement?.catalogItem.nom ?? null,
         viandeNom: o.viande?.catalogItem.nom ?? null,
         statut: o.statut as unknown as OrderStatus,
         estDefaut: o.estDefaut,
       })),
-      avis: reviews,
+      avis,
       noteMoyenne,
     };
   }

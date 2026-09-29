@@ -3,8 +3,10 @@
  * Conforme à SPEC.md (section 8) et AG_RULES.md.
  */
 
-import { Subscription, Formule, StatutAbonnement } from '@prisma/client';
+import { Subscription } from '@prisma/client';
+import { pickCurrentPeriod } from '@meal-app/shared';
 import { prisma } from '../utils/prisma';
+import { fromDbDate } from '../utils/time';
 
 export class SubscriptionRepository {
   async findById(id: number): Promise<Subscription | null> {
@@ -13,53 +15,29 @@ export class SubscriptionRepository {
     });
   }
 
-  async findActiveByUserId(userId: number): Promise<Subscription | null> {
-    return prisma.subscription.findFirst({
-      where: {
-        userId,
-        statut: StatutAbonnement.actif,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
+  /** Toutes les périodes d'un client, de la plus récente à la plus ancienne */
   async findHistoryByUserId(userId: number): Promise<Subscription[]> {
     return prisma.subscription.findMany({
       where: { userId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { dateDebut: 'desc' },
     });
   }
 
-  async create(data: {
-    userId: number;
-    formule: Formule;
-    dateDebut: Date;
-    dateFin: Date;
-    bonus?: string | null;
-  }): Promise<Subscription> {
-    return prisma.subscription.create({
-      data: {
-        userId: data.userId,
-        formule: data.formule,
-        dateDebut: data.dateDebut,
-        dateFin: data.dateFin,
-        bonus: data.bonus,
-        statut: StatutAbonnement.actif,
-      },
-    });
-  }
-
-  async updateStatus(id: number, statut: StatutAbonnement): Promise<Subscription> {
-    return prisma.subscription.update({
-      where: { id },
-      data: { statut },
-    });
-  }
-
-  async countActiveSubscriptions(): Promise<number> {
-    return prisma.subscription.count({
-      where: { statut: StatutAbonnement.actif },
-    });
+  /**
+   * Période « courante » d'un client : celle qui couvre aujourd'hui, sinon la prochaine à venir,
+   * sinon la plus récente (abonnement expiré). Se base sur les dates, pas sur le champ `statut`.
+   */
+  async findCurrentByUserId(userId: number, todayIso: string): Promise<Subscription | null> {
+    const history = await this.findHistoryByUserId(userId);
+    const current = pickCurrentPeriod(
+      history.map((sub) => ({
+        sub,
+        dateDebut: fromDbDate(sub.dateDebut),
+        dateFin: fromDbDate(sub.dateFin),
+      })),
+      todayIso
+    );
+    return current?.sub ?? null;
   }
 }
 

@@ -5,6 +5,7 @@
 
 import { User, Role } from '@prisma/client';
 import { prisma } from '../utils/prisma';
+import { buildLoginKey, loginKeyCandidates } from '../utils/loginKey';
 
 export class UserRepository {
   async findById(id: number): Promise<User | null> {
@@ -19,28 +20,36 @@ export class UserRepository {
     });
   }
 
-  async findByNom(nom: string): Promise<User | null> {
-    return prisma.user.findFirst({
-      where: {
-        nom: {
-          equals: nom.trim(),
-          mode: 'insensitive',
-        },
-      },
-    });
+  async findByLoginKey(loginKey: string): Promise<User | null> {
+    return prisma.user.findUnique({ where: { loginKey } });
+  }
+
+  /**
+   * Retrouve un utilisateur à partir de l'identifiant saisi (« Prénom Nom », ou « Nom Prénom »).
+   * La clé est unique en base : il ne peut plus y avoir d'ambiguïté entre deux clients.
+   */
+  async findByIdentifiant(identifiant: string): Promise<User | null> {
+    for (const key of loginKeyCandidates(identifiant)) {
+      const user = await this.findByLoginKey(key);
+      if (user) {
+        return user;
+      }
+    }
+    return null;
   }
 
   async create(data: {
     nom: string;
     prenom: string;
-    telephone: string;
+    telephone?: string | null;
     role?: Role;
   }): Promise<User> {
     return prisma.user.create({
       data: {
         nom: data.nom.trim(),
         prenom: data.prenom.trim(),
-        telephone: data.telephone.trim(),
+        telephone: data.telephone?.trim() || null,
+        loginKey: buildLoginKey(data.prenom, data.nom),
         role: data.role ?? Role.client,
       },
     });
