@@ -39,6 +39,16 @@ export class ClientController {
     }
   }
 
+  /** PATCH /api/admin/clients/:id */
+  async updateClient(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = Number.parseInt(req.params.id as string, 10);
+      res.status(200).json(await clientService.updateClient(userId, req.body));
+    } catch (err) {
+      next(err);
+    }
+  }
+
   /** POST /api/admin/clients/:id/resend-welcome */
   async resendWelcome(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {

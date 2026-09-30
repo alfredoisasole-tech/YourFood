@@ -12,6 +12,7 @@ import {
   clientListQuerySchema,
   createClientSchema,
   renewSubscriptionSchema,
+  updateClientSchema,
 } from '@meal-app/shared';
 
 const router = Router();
@@ -32,6 +33,11 @@ router.get('/', validateQuery(clientListQuerySchema), (req, res, next) => {
 // Fiche détaillée d'un client
 router.get('/:id', (req, res, next) => {
   clientController.getClientDetail(req, res, next);
+});
+
+// Modifier les informations d'un client
+router.patch('/:id', validateBody(updateClientSchema), (req, res, next) => {
+  clientController.updateClient(req, res, next);
 });
 
 // Renvoyer le message de bienvenue (SPEC 6)

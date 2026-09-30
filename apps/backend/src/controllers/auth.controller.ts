@@ -53,8 +53,7 @@ export class AuthController {
       if (!req.user) {
         throw new UnauthorizedError('Authentification requise');
       }
-      await authService.changePassword(req.user.userId, req.body);
-      res.status(200).json({ message: 'Mot de passe modifié avec succès' });
+      res.status(200).json(await authService.changePassword(req.user.userId, req.body));
     } catch (err) {
       next(err);
     }

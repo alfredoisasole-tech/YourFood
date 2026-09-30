@@ -1,8 +1,12 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import app from '../../src/index';
 import { Role } from '@meal-app/shared';
+vi.mock('../../src/utils/prisma', async () => {
+  const { prismaAuthMock } = await import('../helpers/prismaAuthMock');
+  return { prisma: prismaAuthMock, default: prismaAuthMock };
+});
 
 const TEST_JWT_SECRET = 'test_secret_for_integration_testing_123456';
 

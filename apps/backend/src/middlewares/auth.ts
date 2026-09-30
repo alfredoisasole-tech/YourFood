@@ -6,6 +6,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { Role } from '@meal-app/shared';
+import { prisma } from '../utils/prisma';
 import { UnauthorizedError, ForbiddenError } from '../utils/errors';
 import type { ClientSubscriptionContext } from '../services/subscription.service';
 
@@ -13,6 +14,8 @@ export interface JwtPayload {
   userId: number;
   role: Role;
   nom: string;
+  /** Version du mot de passe au moment de l'émission du jeton */
+  tv?: number;
 }
 
 declare global {
@@ -26,32 +29,46 @@ declare global {
   }
 }
 
-/**
- * Vérifie la présence et la validité du token JWT dans l'en-tête Authorization.
- */
-export function authenticate(req: Request, _res: Response, next: NextFunction): void {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    throw new UnauthorizedError('Token d\'authentification manquant');
+function decodeToken(authHeader: string | undefined): JwtPayload {
+  if (!authHeader?.startsWith('Bearer ')) {
+    throw new UnauthorizedError("Token d'authentification manquant");
   }
 
-  const token = authHeader.substring(7);
   const secret = process.env.JWT_SECRET;
-
   if (!secret) {
-    throw new Error('JWT_SECRET n\'est pas configuré sur le serveur');
+    throw new Error("JWT_SECRET n'est pas configuré sur le serveur");
   }
 
   try {
-    const decoded = jwt.verify(token, secret) as JwtPayload;
-    req.user = decoded;
-    next();
+    return jwt.verify(authHeader.substring(7), secret) as JwtPayload;
   } catch (err) {
     if (err instanceof jwt.TokenExpiredError) {
       throw new UnauthorizedError('Session expirée, veuillez vous reconnecter');
     }
-    throw new UnauthorizedError('Token d\'authentification invalide');
+    throw new UnauthorizedError("Token d'authentification invalide");
+  }
+}
+
+/**
+ * Vérifie le jeton JWT, puis que l'utilisateur existe toujours et que son mot de passe n'a pas
+ * changé depuis l'émission du jeton (sinon la session a été fermée).
+ */
+export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  try {
+    const payload = decodeToken(req.headers.authorization);
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { tokenVersion: true, role: true },
+    });
+    if (!user || user.tokenVersion !== (payload.tv ?? 0)) {
+      throw new UnauthorizedError('Session expirée, veuillez vous reconnecter');
+    }
+
+    req.user = { ...payload, role: user.role as unknown as Role };
+    next();
+  } catch (err) {
+    next(err);
   }
 }
 
@@ -65,7 +82,7 @@ export function requireRole(allowedRole: Role) {
     }
 
     if (req.user.role !== allowedRole) {
-      throw new ForbiddenError('Vous n\'avez pas les droits nécessaires pour cette opération');
+      throw new ForbiddenError("Vous n'avez pas les droits nécessaires pour cette opération");
     }
 
     next();

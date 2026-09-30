@@ -25,6 +25,7 @@ model User {
   loginKey        String    @unique @map("login_key") @db.VarChar(220) // « prénom nom » sans accents ni majuscules : identifiant de connexion unique
   motDePasseHash  String?   @map("mot_de_passe_hash") @db.VarChar(255) // NULL tant que le client n'a pas créé son mot de passe
   role            Role      @default(client)
+  tokenVersion    Int       @default(0) @map("token_version") // Incrémenté à chaque changement de mot de passe : invalide les sessions ouvertes
   createdAt       DateTime  @default(now()) @map("created_at")
 
   subscriptions   Subscription[]

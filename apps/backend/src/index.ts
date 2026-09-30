@@ -1,5 +1,7 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -15,6 +17,7 @@ import {
 } from './routes';
 import { errorHandler } from './middlewares/errorHandler';
 import { startLockScheduler } from './scheduler';
+import { config, findConfigProblems } from './config';
 
 // Configuration dayjs pour le fuseau horaire Africa/Kinshasa (SPEC 2 & 8)
 dayjs.extend(utc);
@@ -23,11 +26,16 @@ dayjs.tz.setDefault('Africa/Kinshasa');
 
 const app = express();
 
+// Derrière l'hébergeur (Railway, Render…), l'adresse IP réelle du client est transmise par le proxy.
+// Sans ce réglage, tous les clients partageraient la même IP pour le limiteur de requêtes.
+app.set('trust proxy', config.trustProxy);
+
 // Middlewares globaux
-app.use(express.json());
+app.use(helmet());
+app.use(express.json({ limit: '100kb' }));
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    origin: config.corsOrigins,
     credentials: true,
   })
 );
@@ -35,7 +43,7 @@ app.use(
 // Rate limiting global (SPEC 2 & 9)
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200,
+  max: 600,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Trop de requêtes, veuillez réessayer plus tard.' },
@@ -67,26 +75,18 @@ app.use((_req, res) => {
 // Middleware centralisé de gestion des erreurs (doit être le dernier middleware)
 app.use(errorHandler);
 
-// Validation de la configuration au démarrage (en dehors des tests)
+// Démarrage (en dehors des tests) : la configuration est vérifiée avant d'accepter des requêtes
 if (process.env.NODE_ENV !== 'test') {
-  const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
-  for (const envVar of requiredEnvVars) {
-    if (!process.env[envVar]) {
-      throw new Error(`Variable d'environnement manquante : ${envVar}`);
-    }
+  const problems = findConfigProblems(process.env);
+  if (problems.length > 0) {
+    throw new Error(`Configuration invalide :\n- ${problems.join('\n- ')}`);
   }
-
-  if (process.env.JWT_SECRET === 'CHANGE_ME_TO_A_STRONG_RANDOM_SECRET') {
-    throw new Error('JWT_SECRET doit être changé — valeur par défaut dangereuse détectée.');
-  }
-
-  const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
   startLockScheduler();
 
-  app.listen(PORT, () => {
+  app.listen(config.port, () => {
     // eslint-disable-next-line no-console
-    console.log(`🚀 Backend meal-app démarré sur le port ${PORT}`);
+    console.log(`🚀 Backend meal-app démarré sur le port ${config.port}`);
     // eslint-disable-next-line no-console
     console.log(
       `⏰ Timezone : Africa/Kinshasa — ${dayjs().tz('Africa/Kinshasa').format('YYYY-MM-DD HH:mm:ss')}`

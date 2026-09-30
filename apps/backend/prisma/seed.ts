@@ -11,6 +11,7 @@
  * 4. Les menus des prochains jours ouvrés (2 plats, 2 accompagnements, 2 viandes).
  */
 
+import 'dotenv/config';
 import {
   PrismaClient,
   Role,

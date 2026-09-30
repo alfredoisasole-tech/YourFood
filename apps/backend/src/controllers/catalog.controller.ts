@@ -41,8 +41,7 @@ export class CatalogController {
   async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = parseInt(req.params.id as string, 10);
-      await catalogService.delete(id);
-      res.status(204).send();
+      res.status(200).json(await catalogService.delete(id));
     } catch (err) {
       next(err);
     }

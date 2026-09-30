@@ -16,11 +16,13 @@ export function formatCodeForDisplay(code: string): string {
 }
 
 /**
- * Lien de connexion. Le code est placé après le « # » : cette partie de l'adresse n'est jamais
- * transmise au serveur (donc absente de ses journaux) et la page peut la retirer de la barre d'adresse.
+ * Lien de connexion. Le code et le nom sont placés après le « # » : cette partie de l'adresse n'est
+ * jamais transmise au serveur (donc absente de ses journaux) et la page la retire de la barre
+ * d'adresse. Le nom pré-remplit le formulaire : le client n'a plus qu'à choisir son mot de passe.
  */
-export function buildAccessLink(frontendUrl: string, code: string): string {
-  return `${frontendUrl.replace(/\/+$/, '')}/bienvenue#${encodeURIComponent(code)}`;
+export function buildAccessLink(frontendUrl: string, code: string, identifiant: string): string {
+  const fragment = new URLSearchParams({ code, nom: identifiant }).toString();
+  return `${frontendUrl.replace(/\/+$/, '')}/bienvenue#${fragment}`;
 }
 
 /** « 2026-10-05 » devient « lundi 5 octobre » */
@@ -72,10 +74,12 @@ export function buildWhatsAppUrl(telephone: string | null, message: string): str
 export function buildAccessDelivery(params: {
   telephone: string | null;
   code: string;
+  /** « Prénom Nom » du client */
+  identifiant: string;
   frontendUrl: string;
   message: (lien: string) => string;
 }): AccessDelivery {
-  const lien = buildAccessLink(params.frontendUrl, params.code);
+  const lien = buildAccessLink(params.frontendUrl, params.code, params.identifiant);
   const message = params.message(lien);
   return {
     code: params.code,

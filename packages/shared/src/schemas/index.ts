@@ -168,6 +168,22 @@ export const renewSubscriptionSchema = z.object({
   dateDebut: mondaySchema.optional(),
 });
 
+/** Modification des informations d'un client (au moins un champ) */
+export const updateClientSchema = z
+  .object({
+    nom: z.string().trim().min(1, 'Le nom est obligatoire').max(100).optional(),
+    prenom: z.string().trim().min(1, 'Le prénom est obligatoire').max(100).optional(),
+    telephone: z
+      .union([z.null(), z.literal('').transform(() => null), phoneSchema])
+      .optional(),
+    bonus: z
+      .union([z.null(), z.string().trim().max(500).transform((value) => value || null)])
+      .optional(),
+  })
+  .refine((dto) => Object.values(dto).some((value) => value !== undefined), {
+    message: 'Aucune modification fournie',
+  });
+
 /** Filtres de la liste des clients (admin) */
 export const clientListQuerySchema = z.object({
   q: z.string().trim().max(100).optional(),
@@ -295,6 +311,7 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type ResetPasswordRequestInput = z.infer<typeof resetPasswordRequestSchema>;
 export type RenewSubscriptionInput = z.infer<typeof renewSubscriptionSchema>;
+export type UpdateClientInput = z.infer<typeof updateClientSchema>;
 export type CreateCatalogItemInput = z.infer<typeof createCatalogItemSchema>;
 export type UpdateCatalogItemInput = z.infer<typeof updateCatalogItemSchema>;
 export type PublishSingleOfferInput = z.infer<typeof publishSingleOfferSchema>;

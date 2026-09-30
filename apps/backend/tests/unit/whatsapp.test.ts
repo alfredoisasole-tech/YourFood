@@ -9,9 +9,10 @@ import {
 } from '../../src/utils/whatsapp';
 
 describe('Accès client : lien, code et message WhatsApp (SPEC 5.2)', () => {
-  it('place le code après le « # » : il n\'est jamais envoyé au serveur', () => {
-    expect(buildAccessLink('https://yourfood.app', 'RN7Q3M8K')).toBe('https://yourfood.app/bienvenue#RN7Q3M8K');
-    expect(buildAccessLink('https://yourfood.app/', 'RN7Q3M8K')).toBe('https://yourfood.app/bienvenue#RN7Q3M8K');
+  it('place le code et le nom après le « # » : ils ne sont jamais envoyés au serveur', () => {
+    const lien = 'https://yourfood.app/bienvenue#code=RN7Q3M8K&nom=Ruth+Ngoy';
+    expect(buildAccessLink('https://yourfood.app', 'RN7Q3M8K', 'Ruth Ngoy')).toBe(lien);
+    expect(buildAccessLink('https://yourfood.app/', 'RN7Q3M8K', 'Ruth Ngoy')).toBe(lien);
   });
 
   it('groupe le code par 4 pour la lecture', () => {
@@ -48,11 +49,12 @@ describe('Accès client : lien, code et message WhatsApp (SPEC 5.2)', () => {
     const delivery = buildAccessDelivery({
       telephone: null,
       code: 'RN7Q3M8K',
+      identifiant: 'Ruth Ngoy',
       frontendUrl: 'https://yourfood.app',
       message: (lien) => `Ouvre ${lien}`,
     });
     expect(delivery.whatsappUrl).toBeNull();
-    expect(delivery.lien).toBe('https://yourfood.app/bienvenue#RN7Q3M8K');
+    expect(delivery.lien).toBe('https://yourfood.app/bienvenue#code=RN7Q3M8K&nom=Ruth+Ngoy');
     expect(delivery.codeAffichage).toBe('RN7Q 3M8K');
   });
 });

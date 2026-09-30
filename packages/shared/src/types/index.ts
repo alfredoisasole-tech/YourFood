@@ -237,6 +237,16 @@ export interface SessionResponse {
   subscription: SubscriptionView | null;
 }
 
+/** Modification des informations d'un client par l'admin (champs absents = inchangés) */
+export interface UpdateClientDto {
+  nom?: string;
+  prenom?: string;
+  /** null pour retirer le numéro */
+  telephone?: string | null;
+  /** Bonus de la période en cours ; null pour l'effacer */
+  bonus?: string | null;
+}
+
 /** Demande de réinitialisation du mot de passe (initiée par l'admin depuis la fiche client) */
 export interface ResetPasswordRequestDto {
   subscriptionId: number;
@@ -270,6 +280,22 @@ export interface UpdateCatalogItemDto {
   nom?: string;
   categorie?: ItemCategory;
   actif?: boolean;
+}
+
+/** Plat de la carte vu par l'admin, avec les menus à venir (non verrouillés) qui le proposent */
+export interface CatalogItemView extends CatalogItem {
+  prochainsMenus: string[];
+}
+
+/**
+ * Résultat d'une modification de plat. Quand un plat est désactivé, il est retiré des menus à venir
+ * (après aujourd'hui) ; il reste sur ceux où un client l'a déjà choisi ou où il est la seule option
+ * de sa catégorie.
+ */
+export interface UpdateCatalogItemResponse {
+  item: CatalogItemView;
+  menusRetires: string[];
+  menusConserves: string[];
 }
 
 // --- Publication des offres du jour ---

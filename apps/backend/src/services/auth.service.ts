@@ -1,6 +1,10 @@
 /**
  * Service Métier : Authentification & Sessions.
  * Conforme à SPEC.md (5.3 & 7) et AG_RULES.md.
+ *
+ * Chaque jeton porte la version du mot de passe de l'utilisateur (`tv`). Un changement de mot de
+ * passe (volontaire ou après réinitialisation) incrémente cette version : les jetons émis avant
+ * sont refusés par le middleware `authenticate`.
  */
 
 import bcrypt from 'bcrypt';
@@ -39,12 +43,16 @@ interface VerifiedCode {
 }
 
 export class AuthService {
-  private generateToken(payload: { userId: number; nom: string; role: Role }): string {
+  private generateToken(user: PrismaUser): string {
     const secret = process.env.JWT_SECRET;
     if (!secret) {
       throw new Error('JWT_SECRET manquant dans la configuration');
     }
-    return jwt.sign(payload, secret, { expiresIn: JWT_EXPIRES_IN });
+    return jwt.sign(
+      { userId: user.id, nom: user.nom, role: user.role as unknown as Role, tv: user.tokenVersion },
+      secret,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
   }
 
   /**
@@ -82,7 +90,7 @@ export class AuthService {
     const { codeRecord, user } = await this.verifyCodeOwnership(dto);
     const hash = await bcrypt.hash(dto.nouveauMotDePasse, BCRYPT_ROUNDS);
 
-    await prisma.$transaction(async (tx) => {
+    const updated = await prisma.$transaction(async (tx) => {
       const claimed = await tx.accessCode.updateMany({
         where: { id: codeRecord.id, utilise: false },
         data: { utilise: true, dateUtilisation: new Date() },
@@ -90,10 +98,13 @@ export class AuthService {
       if (claimed.count === 0) {
         throw new BadRequestError(INVALID_CODE_MESSAGE);
       }
-      await tx.user.update({ where: { id: user.id }, data: { motDePasseHash: hash } });
+      return tx.user.update({
+        where: { id: user.id },
+        data: { motDePasseHash: hash, tokenVersion: { increment: 1 } },
+      });
     });
 
-    return this.buildAuthResponse(user);
+    return this.buildAuthResponse(updated);
   }
 
   /**
@@ -146,12 +157,12 @@ export class AuthService {
   }
 
   /**
-   * Changement de mot de passe par le client connecté.
-   * SPEC 5.3.
+   * Changement de mot de passe par l'utilisateur connecté (SPEC 5.3).
+   * Les autres sessions sont fermées ; la session courante reçoit un nouveau jeton.
    */
-  async changePassword(userId: number, dto: ChangePasswordDto): Promise<void> {
+  async changePassword(userId: number, dto: ChangePasswordDto): Promise<AuthResponse> {
     const user = await userRepository.findById(userId);
-    if (!user || !user.motDePasseHash) {
+    if (!user?.motDePasseHash) {
       throw new NotFoundError('Utilisateur introuvable');
     }
 
@@ -161,14 +172,15 @@ export class AuthService {
     }
 
     const newHash = await bcrypt.hash(dto.nouveauMotDePasse, BCRYPT_ROUNDS);
-    await userRepository.updatePassword(user.id, newHash);
+    const updated = await userRepository.updatePassword(user.id, newHash);
+    return this.buildAuthResponse(updated);
   }
 
   private async buildAuthResponse(user: PrismaUser): Promise<AuthResponse> {
     const context = user.role === 'client' ? await subscriptionService.getCurrent(user.id) : null;
 
     return {
-      token: this.generateToken({ userId: user.id, nom: user.nom, role: user.role as unknown as Role }),
+      token: this.generateToken(user),
       user: toUser(user),
       subscription: context?.view ?? null,
     };

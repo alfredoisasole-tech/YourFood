@@ -58,7 +58,7 @@ export class UserRepository {
   async updatePassword(id: number, motDePasseHash: string): Promise<User> {
     return prisma.user.update({
       where: { id },
-      data: { motDePasseHash },
+      data: { motDePasseHash, tokenVersion: { increment: 1 } },
     });
   }
 

@@ -7,6 +7,8 @@ import { Prisma, AccessCodeType as PrismaAccessCodeType } from '@prisma/client';
 import {
   CreateClientDto,
   CreateClientResponse,
+  UpdateClientDto,
+  User,
   RenewSubscriptionDto,
   ClientDetailView,
   ClientListFilter,
@@ -22,6 +24,7 @@ import {
   pickCurrentPeriod,
 } from '@meal-app/shared';
 import { prisma } from '../utils/prisma';
+import { config } from '../config';
 import { userRepository } from '../repositories/user.repository';
 import { subscriptionRepository } from '../repositories/subscription.repository';
 import { generateActivationCode } from '../utils/codeGenerator';
@@ -36,7 +39,7 @@ type Tx = Prisma.TransactionClient;
 
 export class ClientService {
   private getFrontendUrl(): string {
-    return process.env.FRONTEND_URL ?? 'http://localhost:5173';
+    return config.frontendUrl;
   }
 
   /** Génère un code d'accès unique (2 initiales + 6 caractères aléatoires) */
@@ -121,16 +124,69 @@ export class ClientService {
   }
 
   private buildWelcomeDelivery(
-    user: { prenom: string; telephone: string | null },
+    user: { prenom: string; nom: string; telephone: string | null },
     code: string,
     dateDebut: string
   ): AccessDelivery {
     return buildAccessDelivery({
       telephone: user.telephone,
       code,
+      identifiant: `${user.prenom} ${user.nom}`,
       frontendUrl: this.getFrontendUrl(),
       message: (lien) => buildWelcomeMessage({ prenom: user.prenom, dateDebut, lien, code }),
     });
+  }
+
+  /**
+   * Modification des informations d'un client (correction d'une faute de frappe, nouveau numéro…).
+   * - Nom et prénom forment l'identifiant de connexion : il est recalculé et doit rester unique ;
+   *   le client se connecte ensuite avec le nouveau nom.
+   * - Le bonus modifié est celui de la période d'abonnement courante.
+   */
+  async updateClient(userId: number, dto: UpdateClientDto): Promise<User> {
+    const user = await userRepository.findById(userId);
+    if (!user || user.role !== 'client') {
+      throw new NotFoundError('Client introuvable');
+    }
+
+    const nom = dto.nom?.trim() ?? user.nom;
+    const prenom = dto.prenom?.trim() ?? user.prenom;
+    const loginKey = buildLoginKey(prenom, nom);
+    if (loginKey !== user.loginKey) {
+      const homonyme = await userRepository.findByLoginKey(loginKey);
+      if (homonyme && homonyme.id !== userId) {
+        throw new ConflictError(
+          `Un client s'appelle déjà « ${prenom} ${nom} ». Ajoute un détail qui les distingue.`
+        );
+      }
+    }
+
+    if (dto.telephone) {
+      const sameNumber = await userRepository.findByTelephone(dto.telephone);
+      if (sameNumber && sameNumber.id !== userId) {
+        throw new ConflictError('Un autre client utilise déjà ce numéro de téléphone');
+      }
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (dto.bonus !== undefined) {
+        const current = await subscriptionRepository.findCurrentByUserId(userId, getTodayDateString());
+        if (current) {
+          await tx.subscription.update({ where: { id: current.id }, data: { bonus: dto.bonus } });
+        }
+      }
+      return tx.user.update({
+        where: { id: userId },
+        data: {
+          nom,
+          prenom,
+          loginKey,
+          ...(dto.telephone !== undefined ? { telephone: dto.telephone } : {}),
+        },
+      });
+    });
+
+    return toUser(updated);
   }
 
   /**
@@ -210,6 +266,7 @@ export class ClientService {
     return buildAccessDelivery({
       telephone: user.telephone,
       code,
+      identifiant: `${user.prenom} ${user.nom}`,
       frontendUrl: this.getFrontendUrl(),
       message: (lien) => buildResetMessage({ prenom: user.prenom, lien, code }),
     });
