@@ -19,7 +19,7 @@ L'identifiant de connexion est **« Prénom Nom »** (sans tenir compte des acce
 Tous les abonnements commencent un **lundi** et finissent un **vendredi**.
 
 > [!NOTE]
-> **Première connexion** : le client saisit son identifiant + son code (`POST /api/auth/verify-code`, qui ne consomme pas le code), puis choisit son mot de passe (`POST /api/auth/first-login`, 8 caractères minimum). Ensuite : identifiant + mot de passe. Le lien d'accès a la forme `…/bienvenue#CODE` (le code est après le « # »).
+> **Première connexion** : le client saisit son identifiant + son code (`POST /api/auth/verify-code`, qui ne consomme pas le code), puis choisit son mot de passe (`POST /api/auth/first-login`, 8 caractères minimum). Ensuite : identifiant + mot de passe. Le lien d'accès a la forme `…/bienvenue#code=CODE&nom=Prénom+Nom` (tout est après le « # », jamais envoyé au serveur) ; il pré-remplit le formulaire de première connexion.
 
 ---
 

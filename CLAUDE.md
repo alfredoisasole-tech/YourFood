@@ -34,13 +34,20 @@ Architecture volontairement simple : un serveur, une base, pas de cache ni de fi
 - Paiement hors application en v1. Prix **hebdomadaires** (25 000 / 35 000 FC), additionnés sur la durée.
 - Abonnements : toujours du **lundi au vendredi** ; durée en semaines (1 mois = 4 semaines) ; « jours restants » en jours ouvrés. L'état (actif / bientôt expiré / expiré) se **calcule sur les dates**, jamais sur le champ `statut`. Les règles de dates sont dans `packages/shared/src/utils/subscription.ts`.
 - Identifiant de connexion = « prénom nom » normalisé (`login_key`, unique). Le téléphone est facultatif.
+- Sessions : le JWT porte `tv` (token_version) ; tout changement de mot de passe incrémente la version et ferme les autres sessions. `authenticate` interroge donc la base à chaque requête.
+- Configuration serveur centralisée dans `apps/backend/src/config.ts` (vérifiée au démarrage en production).
 - Le verrouillage de 20h est automatique (`scheduler.ts` + à la lecture). Une annulation est enregistrée même sans commande préalable ; les annulés ne reçoivent pas de repas par défaut ; la viande par défaut dépend de la formule.
 - Un menu compte au moins un plat, un accompagnement et une viande, sans maximum par catégorie.
+
+## Frontend
+- DA de la maquette : couleurs en variables CSS (canaux RVB) dans `src/styles/globals.css`, exposées à Tailwind (`bg-accent`, `text-ink-soft`, `bg-field`…) ; le mode sombre redéfinit ces variables sous `[data-theme="dark"]` (variante `dark:`). Ne pas coder de couleurs en dur sauf exception documentée.
+- Composants de base dans `src/components/ui` (Button, Field, Sheet, Chips, Toggle, Icon…) ; réutiliser avant d'en créer.
+- Polices, logos et photos extraits de la maquette dans `public/`.
 
 ## Git
 - Branche de travail : `dev` ; `main` est la branche stable. Commits clairs et incrémentaux (style `feat(scope): ...`, `fix(ci): ...`).
 - Demander l'avis de l'utilisateur avant tout changement majeur.
 
 ## État d'avancement
-- Fait : structure, CI, schéma Prisma + migrations, backend aligné sur la SPEC v3.1 (phase 1 du plan : auth en deux étapes, abonnements lundi-vendredi, verrouillage automatique, endpoints historique / stats / menus / clients), tests unitaires du backend.
-- À faire : tests d'intégration avec base, frontend (phases 2 à 5 du plan, en attente de validation), README complet. Les migrations et le seed ont été exécutés et vérifiés sur PostgreSQL.
+- Fait : backend complet (SPEC v3.1, sécurité de production, tests unitaires + intégration sur PostgreSQL), frontend complet selon la maquette (espace client, espace admin mobile et ordinateur, mode sombre), README.
+- À faire : déploiement (hébergeur à choisir), tests de composants frontend plus poussés, décisions ouvertes (jours fériés, suppression d'un client, arrêt anticipé d'un abonnement).

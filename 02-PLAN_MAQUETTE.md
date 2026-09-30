@@ -2,7 +2,7 @@
 
 Document de travail pour les deux développeurs. Il compare la maquette (`Maquette/`) à `SPEC.md` (v3, source de vérité) et au backend déjà écrit, liste les écarts avec une proposition à chaque fois, puis découpe le travail en phases.
 
-> **État au 29 septembre 2026 :** les décisions de la section 0 sont prises et la **phase 1 (backend) est réalisée**. Les sections 3 à 6 restent l'analyse de départ ; quand elles divergent de la section 0, c'est la section 0 qui fait foi.
+> **État au 30 septembre 2026 :** toutes les phases sont réalisées (backend, frontend client et admin selon la maquette, mode sombre, tests, README). Les sections 3 à 6 restent l'analyse de départ ; quand elles divergent de la section 0, c'est la section 0 qui fait foi.
 
 ---
 

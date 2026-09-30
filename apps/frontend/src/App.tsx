@@ -1,52 +1,90 @@
-import React from 'react';
+/**
+ * Routes de l'application : espace client (mobile) et espace administratrice.
+ */
 
-export function App(): React.JSX.Element {
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { Role } from '@meal-app/shared';
+import { ThemeProvider } from './lib/theme';
+import { AuthProvider } from './features/auth/AuthContext';
+import { RequireRole } from './features/auth/RequireRole';
+import { ToastProvider } from './components/ui/Toast';
+import { WelcomePage } from './pages/client/WelcomePage';
+import { LoginPage } from './pages/client/LoginPage';
+import { FirstLoginPage } from './pages/client/FirstLoginPage';
+import { AccessLinkPage } from './pages/client/AccessLinkPage';
+import { ClientArea } from './pages/client/ClientArea';
+import { MenuPage } from './pages/client/MenuPage';
+import { HistoryPage } from './pages/client/HistoryPage';
+import { AccountPage } from './pages/client/AccountPage';
+import { AdminLoginPage } from './pages/admin/AdminLoginPage';
+import { AdminArea } from './pages/admin/AdminArea';
+import { AdminHomePage } from './pages/admin/AdminHomePage';
+import { StatsPage } from './pages/admin/StatsPage';
+import { TrackingPage } from './pages/admin/TrackingPage';
+import { ClientsPage } from './pages/admin/ClientsPage';
+import { ClientDetailPage } from './pages/admin/ClientDetailPage';
+import { CatalogPage } from './pages/admin/CatalogPage';
+import { MenusPage } from './pages/admin/MenusPage';
+import { ReviewsPage } from './pages/admin/ReviewsPage';
+import { AdminAccountPage } from './pages/admin/AdminAccountPage';
+
+export function AppRoutes() {
   return (
-    <div className="min-h-screen flex flex-col bg-stone-50 text-stone-900">
-      <header className="bg-white border-b border-stone-200 px-4 py-3 shadow-sm sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-2xl" role="img" aria-label="plat">🍲</span>
-            <span className="font-extrabold text-xl tracking-tight text-orange-600">YourFood</span>
-          </div>
-          <span className="text-xs bg-orange-100 text-orange-800 font-semibold px-2.5 py-1 rounded-full">
-            Kinshasa
-          </span>
-        </div>
-      </header>
+    <Routes>
+      {/* Espace client */}
+      <Route path="/" element={<WelcomePage />} />
+      <Route path="/connexion" element={<LoginPage />} />
+      <Route path="/premiere-connexion" element={<FirstLoginPage />} />
+      <Route path="/bienvenue" element={<AccessLinkPage />} />
+      <Route
+        element={
+          <RequireRole role={Role.CLIENT}>
+            <ClientArea />
+          </RequireRole>
+        }
+      >
+        <Route path="/menu" element={<MenuPage />} />
+        <Route path="/historique" element={<HistoryPage />} />
+        <Route path="/compte" element={<AccountPage />} />
+      </Route>
 
-      <main className="flex-1 max-w-5xl mx-auto w-full p-4 md:p-6 flex flex-col items-center justify-center text-center">
-        <div className="max-w-md w-full bg-white p-8 rounded-2xl shadow-sm border border-stone-200">
-          <div className="text-4xl mb-4" role="img" aria-label="repas">🍽️</div>
-          <h1 className="text-2xl font-bold text-stone-900 mb-2">Bienvenue sur YourFood</h1>
-          <p className="text-stone-600 mb-6 text-sm">
-            Service d'abonnement de repas au quotidien. Commandez votre menu de midi préparé avec soin.
-          </p>
-          <div className="space-y-3">
-            <div className="p-3 bg-stone-50 rounded-xl text-left border border-stone-100">
-              <span className="font-semibold text-xs text-stone-500 uppercase tracking-wider block mb-1">
-                Espace Client
-              </span>
-              <p className="text-xs text-stone-600">
-                Activez votre abonnement avec votre code à 8 caractères ou connectez-vous.
-              </p>
-            </div>
-            <div className="p-3 bg-stone-50 rounded-xl text-left border border-stone-100">
-              <span className="font-semibold text-xs text-stone-500 uppercase tracking-wider block mb-1">
-                Espace Cuisine & Admin
-              </span>
-              <p className="text-xs text-stone-600">
-                Suivi de préparation en direct et gestion des abonnements.
-              </p>
-            </div>
-          </div>
-        </div>
-      </main>
+      {/* Espace administratrice */}
+      <Route path="/admin/connexion" element={<AdminLoginPage />} />
+      <Route
+        path="/admin"
+        element={
+          <RequireRole role={Role.ADMIN}>
+            <AdminArea />
+          </RequireRole>
+        }
+      >
+        <Route index element={<AdminHomePage />} />
+        <Route path="statistiques" element={<StatsPage />} />
+        <Route path="suivi" element={<TrackingPage />} />
+        <Route path="clients" element={<ClientsPage />} />
+        <Route path="clients/:id" element={<ClientDetailPage />} />
+        <Route path="carte" element={<CatalogPage />} />
+        <Route path="menus" element={<MenusPage />} />
+        <Route path="avis" element={<ReviewsPage />} />
+        <Route path="compte" element={<AdminAccountPage />} />
+      </Route>
 
-      <footer className="border-t border-stone-200 py-4 text-center text-xs text-stone-500">
-        &copy; {new Date().getFullYear()} YourFood — Tous droits réservés.
-      </footer>
-    </div>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
+
+export function App() {
+  return (
+    <ThemeProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </AuthProvider>
+      </ToastProvider>
+    </ThemeProvider>
   );
 }
 
