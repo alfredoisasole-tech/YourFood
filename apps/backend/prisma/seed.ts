@@ -50,6 +50,11 @@ interface DemoClient {
 }
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'Le seed contient des mots de passe de démonstration : il est interdit en production. Utilise « npm run create-admin ».'
+    );
+  }
   console.log('🌱 Démarrage du seed YourFood (fuseau : Africa/Kinshasa)...');
 
   const today = dayjs().tz('Africa/Kinshasa').format('YYYY-MM-DD');

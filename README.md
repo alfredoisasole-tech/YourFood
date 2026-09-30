@@ -107,6 +107,8 @@ La base de test se crée une fois avec `CREATE DATABASE mealapp_test;` puis `DAT
 
 ## Mise en production
 
+**Guide pas à pas Supabase + Render + Vercel : [`DEPLOIEMENT.md`](./DEPLOIEMENT.md).**
+
 Variables obligatoires côté backend (le serveur refuse de démarrer sinon) :
 
 | Variable | Rôle |

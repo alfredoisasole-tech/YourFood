@@ -54,6 +54,9 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit --project apps/backend/tsconfig.json
 
+      - name: Build de production
+        run: npm run build --workspace=apps/backend
+
       - name: Run migrations
         run: npx prisma migrate deploy --schema=apps/backend/prisma/schema.prisma
 
