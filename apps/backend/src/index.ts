@@ -1,28 +1,49 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
 
-// Configuration dayjs pour le fuseau horaire Africa/Kinshasa
+import {
+  authRoutes,
+  clientAreaRoutes,
+  offerRoutes,
+  orderRoutes,
+  adminRoutes,
+  reviewRoutes,
+} from './routes';
+import { errorHandler } from './middlewares/errorHandler';
+import { startLockScheduler } from './scheduler';
+import { config, findConfigProblems } from './config';
+
+// Configuration dayjs pour le fuseau horaire Africa/Kinshasa (SPEC 2 & 8)
 dayjs.extend(utc);
 dayjs.extend(timezone);
 dayjs.tz.setDefault('Africa/Kinshasa');
 
 const app = express();
 
-// Middlewares globaux
-app.use(express.json());
-app.use(cors({
-  origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
-  credentials: true,
-}));
+// Derrière l'hébergeur (Railway, Render…), l'adresse IP réelle du client est transmise par le proxy.
+// Sans ce réglage, tous les clients partageraient la même IP pour le limiteur de requêtes.
+app.set('trust proxy', config.trustProxy);
 
-// Rate limiting global
+// Middlewares globaux
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(express.json({ limit: '100kb' }));
+app.use(
+  cors({
+    origin: config.corsOrigins,
+    credentials: true,
+  })
+);
+
+// Rate limiting global (SPEC 2 & 9)
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 600,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Trop de requêtes, veuillez réessayer plus tard.' },
@@ -31,35 +52,46 @@ app.use(globalLimiter);
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: dayjs().tz('Africa/Kinshasa').toISOString() });
+  res.json({
+    status: 'ok',
+    timezone: 'Africa/Kinshasa',
+    timestamp: dayjs().tz('Africa/Kinshasa').format('YYYY-MM-DD HH:mm:ss'),
+  });
 });
 
-// TODO: Monter les routes ici
-// app.use('/api/auth', authRouter);
-// app.use('/api/offers', offersRouter);
-// app.use('/api/orders', ordersRouter);
-// app.use('/api/admin', adminRouter);
-// app.use('/api/reviews', reviewsRouter);
+// Montage des routes de l'API
+app.use('/api/auth', authRoutes);
+app.use('/api/client', clientAreaRoutes);
+app.use('/api/offers', offerRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/admin', adminRoutes);
 
-// Validation de la configuration au démarrage
-const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
-for (const envVar of requiredEnvVars) {
-  if (!process.env[envVar]) {
-    throw new Error(`Variable d'environnement manquante : ${envVar}`);
+// Route 404 pour les endpoints inconnus
+app.use((_req, res) => {
+  res.status(404).json({ error: 'Endpoint non trouvé' });
+});
+
+// Middleware centralisé de gestion des erreurs (doit être le dernier middleware)
+app.use(errorHandler);
+
+// Démarrage (en dehors des tests) : la configuration est vérifiée avant d'accepter des requêtes
+if (process.env.NODE_ENV !== 'test') {
+  const problems = findConfigProblems(process.env);
+  if (problems.length > 0) {
+    throw new Error(`Configuration invalide :\n- ${problems.join('\n- ')}`);
   }
+
+  startLockScheduler();
+
+  app.listen(config.port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`🚀 Backend meal-app démarré sur le port ${config.port}`);
+    // eslint-disable-next-line no-console
+    console.log(
+      `⏰ Timezone : Africa/Kinshasa — ${dayjs().tz('Africa/Kinshasa').format('YYYY-MM-DD HH:mm:ss')}`
+    );
+  });
 }
-
-if (process.env.JWT_SECRET === 'CHANGE_ME_TO_A_STRONG_RANDOM_SECRET') {
-  throw new Error('JWT_SECRET doit être changé — valeur par défaut dangereuse détectée.');
-}
-
-const PORT = parseInt(process.env.PORT ?? '3001', 10);
-
-app.listen(PORT, () => {
-  // eslint-disable-next-line no-console
-  console.log(`🚀 Backend meal-app démarré sur le port ${PORT}`);
-  // eslint-disable-next-line no-console
-  console.log(`⏰ Timezone : Africa/Kinshasa — ${dayjs().tz('Africa/Kinshasa').format('YYYY-MM-DD HH:mm:ss')}`);
-});
 
 export default app;

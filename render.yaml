@@ -1,0 +1,33 @@
+# Blueprint Render : décrit l'API (backend). La base est sur Supabase, le frontend sur Vercel.
+# Guide pas à pas : DEPLOIEMENT.md
+services:
+  - type: web
+    name: yourfood-api
+    runtime: node
+    # Frankfurt est la région Render la plus proche de Kinshasa
+    region: frankfurt
+    # « free » s'endort après 15 min sans requête (démarrage lent, verrouillage de 20h en retard).
+    # Pour une utilisation réelle, passer à « starter » (voir DEPLOIEMENT.md).
+    plan: free
+    branch: main
+    autoDeploy: true
+    # Les dépendances de développement sont nécessaires : esbuild (build) et prisma (migrations au démarrage)
+    buildCommand: npm ci --include=dev && npm run build --workspace=apps/backend
+    # Applique les migrations en attente, puis démarre le serveur
+    startCommand: npm run start:prod --workspace=apps/backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: TZ
+        value: Africa/Kinshasa
+      # Secret de signature des sessions : généré par Render, jamais visible dans le dépôt
+      - key: JWT_SECRET
+        generateValue: true
+      # À renseigner dans le tableau de bord Render (voir DEPLOIEMENT.md)
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
